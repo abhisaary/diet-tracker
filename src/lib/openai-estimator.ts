@@ -6,6 +6,7 @@ import type { NutritionEstimate } from "@/lib/schemas";
 
 const estimateResponseSchema = z.object({
   calories: z.number().nonnegative(),
+  calculationSummary: z.string(),
   cleanedDescription: z.string(),
   proteinGrams: z.number().nonnegative(),
   carbsGrams: z.number().nonnegative(),
@@ -20,9 +21,22 @@ const estimateResponseSchema = z.object({
     }),
   ),
   inferredMealTime: z.string().datetime().nullable(),
+  macroBreakdown: z.array(
+    z.object({
+      amount: z.string(),
+      name: z.string(),
+      calories: z.number().nonnegative(),
+      proteinGrams: z.number().nonnegative(),
+      carbsGrams: z.number().nonnegative(),
+      fatGrams: z.number().nonnegative(),
+      fiberGrams: z.number().nonnegative(),
+      macroBasis: z.string(),
+    }),
+  ),
   mealTitle: z.string(),
   notableIngredients: z.array(z.string()),
   possibleTriggers: z.array(z.string()),
+  sanityCheck: z.string(),
   assumptions: z.array(z.string()),
 });
 
@@ -31,6 +45,7 @@ const estimateJsonSchema = {
   additionalProperties: false,
   properties: {
     calories: { type: "number", minimum: 0 },
+    calculationSummary: { type: "string" },
     cleanedDescription: { type: "string" },
     proteinGrams: { type: "number", minimum: 0 },
     carbsGrams: { type: "number", minimum: 0 },
@@ -53,6 +68,33 @@ const estimateJsonSchema = {
     inferredMealTime: {
       anyOf: [{ type: "string", format: "date-time" }, { type: "null" }],
     },
+    macroBreakdown: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          amount: { type: "string" },
+          name: { type: "string" },
+          calories: { type: "number", minimum: 0 },
+          proteinGrams: { type: "number", minimum: 0 },
+          carbsGrams: { type: "number", minimum: 0 },
+          fatGrams: { type: "number", minimum: 0 },
+          fiberGrams: { type: "number", minimum: 0 },
+          macroBasis: { type: "string" },
+        },
+        required: [
+          "name",
+          "amount",
+          "calories",
+          "proteinGrams",
+          "carbsGrams",
+          "fatGrams",
+          "fiberGrams",
+          "macroBasis",
+        ],
+      },
+    },
     mealTitle: { type: "string" },
     notableIngredients: {
       type: "array",
@@ -66,9 +108,11 @@ const estimateJsonSchema = {
       type: "array",
       items: { type: "string" },
     },
+    sanityCheck: { type: "string" },
   },
   required: [
     "calories",
+    "calculationSummary",
     "cleanedDescription",
     "proteinGrams",
     "carbsGrams",
@@ -78,10 +122,12 @@ const estimateJsonSchema = {
     "estimatedPortion",
     "ingredientEstimates",
     "inferredMealTime",
+    "macroBreakdown",
     "mealTitle",
     "notableIngredients",
     "possibleTriggers",
     "assumptions",
+    "sanityCheck",
   ],
 };
 
@@ -109,9 +155,13 @@ export async function estimateMealNutrition({
       ? "Use the image and user description as evidence."
       : "Use the user description as evidence. No meal image was provided.",
     "The goal is rough trend tracking, not gram-perfect diet logging.",
+    "Use this workflow before returning JSON: first estimate a complete ingredient list and portion size for each ingredient from the image, description, and any menu context; then calculate each ingredient's macro contribution from typical nutrition data; then sum those contributions into the top-level calories/protein/carbs/fat/fiber; finally sanity-check whether the total seems plausible for the visible meal size and restaurant/home context.",
     "Return mealTitle as a short display title, like 'Tofu Sisig Burrito' or 'Greek Yogurt Bowl'.",
     "Return cleanedDescription as a concise normalized meal description suitable for a meal log.",
     "Return ingredientEstimates as a complete ingredient list with approximate amounts per ingredient.",
+    "Return macroBreakdown using the same ingredients as ingredientEstimates. Each macroBasis should be a brief citation-like phrase such as 'typical cooked white rice, 1 cup' or 'plain Greek yogurt, 170 g'.",
+    "Return calculationSummary as a concise one-sentence explanation of the ingredient-sum calculation. Return sanityCheck as one concise sentence noting whether the total looks plausible or what could swing it.",
+    "Do not include hidden step-by-step reasoning; store only concise estimates, assumptions, calculationSummary, sanityCheck, and per-ingredient macroBasis.",
     "If the description clearly states or implies when the meal was eaten, return inferredMealTime as a UTC ISO 8601 timestamp ending in Z. Otherwise return null.",
     `The submission time is ${submittedAtIso}.`,
     timezone ? `The user's local timezone is ${timezone}. Use it to resolve relative phrases like this morning, last night, yesterday, or 30 minutes ago.` : "",

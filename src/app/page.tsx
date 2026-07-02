@@ -659,6 +659,7 @@ export default function Home() {
             amount: "estimated amount",
             name,
           }));
+    const macroBreakdown = meal.nutrition.macroBreakdown ?? [];
     const isEditing = editingMealId === meal.id;
     const isExpanded = expandedMealId === meal.id || isEditing;
 
@@ -739,6 +740,43 @@ export default function Home() {
                     ))}
                   </ul>
                 </div>
+
+                {macroBreakdown.length > 0 ||
+                meal.nutrition.calculationSummary ||
+                meal.nutrition.sanityCheck ? (
+                  <div className="mt-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Macro basis
+                    </p>
+                    {meal.nutrition.calculationSummary ? (
+                      <p className="mt-2 text-sm leading-6 text-slate-700">
+                        {meal.nutrition.calculationSummary}
+                      </p>
+                    ) : null}
+                    {macroBreakdown.length > 0 ? (
+                      <ul className="mt-2 space-y-2 text-sm text-slate-700">
+                        {macroBreakdown.map((ingredient) => (
+                          <li key={`${ingredient.name}-${ingredient.amount}`}>
+                            <span className="font-medium">{ingredient.name}</span>:{" "}
+                            {ingredient.amount}, {Math.round(ingredient.calories)} cal,{" "}
+                            {Math.round(ingredient.proteinGrams)}g protein,{" "}
+                            {Math.round(ingredient.carbsGrams)}g carbs,{" "}
+                            {Math.round(ingredient.fatGrams)}g fat,{" "}
+                            {Math.round(ingredient.fiberGrams)}g fiber
+                            <span className="block text-xs text-slate-500">
+                              {ingredient.macroBasis}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {meal.nutrition.sanityCheck ? (
+                      <p className="mt-2 text-xs leading-5 text-slate-500">
+                        {meal.nutrition.sanityCheck}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </>
             ) : (
               <>

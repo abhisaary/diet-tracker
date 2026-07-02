@@ -14,22 +14,32 @@ export const macroSchema = z.object({
   fiberGrams: z.number().nonnegative(),
 });
 
+const ingredientEstimateSchema = z.object({
+  amount: z.string(),
+  name: z.string(),
+});
+
+const ingredientMacroEstimateSchema = ingredientEstimateSchema.extend({
+  calories: z.number().nonnegative(),
+  proteinGrams: z.number().nonnegative(),
+  carbsGrams: z.number().nonnegative(),
+  fatGrams: z.number().nonnegative(),
+  fiberGrams: z.number().nonnegative(),
+  macroBasis: z.string(),
+});
+
 export const nutritionEstimateSchema = macroSchema.extend({
+  calculationSummary: z.string().optional(),
   cleanedDescription: z.string().optional(),
   confidence: z.enum(["low", "medium", "high"]),
   estimatedPortion: z.string(),
-  ingredientEstimates: z
-    .array(
-      z.object({
-        amount: z.string(),
-        name: z.string(),
-      }),
-    )
-    .optional(),
+  ingredientEstimates: z.array(ingredientEstimateSchema).optional(),
   inferredMealTime: z.string().datetime().nullable(),
+  macroBreakdown: z.array(ingredientMacroEstimateSchema).optional(),
   mealTitle: z.string().optional(),
   notableIngredients: z.array(z.string()),
   possibleTriggers: z.array(z.string()),
+  sanityCheck: z.string().optional(),
   assumptions: z.array(z.string()),
   model: z.string(),
   estimatedAt: z.string().datetime(),
