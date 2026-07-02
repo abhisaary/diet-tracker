@@ -1,36 +1,99 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Diet Tracker
+
+A personal, single-user meal and gut symptom tracker. The web UI is designed for
+both phone and Mac use: log a meal photo plus quick description, let OpenAI
+vision estimate rough macros, and save meal, symptom, and nutrition records to
+Supabase.
 
 ## Getting Started
 
-First, run the development server:
+1. Copy the environment template:
+
+```bash
+cp .env.example .env.local
+```
+
+2. Create a Supabase project.
+
+In the Supabase SQL editor, run `supabase/schema.sql`. This creates:
+
+- `meals` table
+- `symptoms` table
+- private `meal-photos` storage bucket
+- row-level security policies for signed-in users
+
+3. Configure Supabase Auth.
+
+Enable email/password sign-ins in Supabase Auth. In Supabase Auth URL settings,
+add your local and deployed URLs:
+
+```text
+http://localhost:3000
+https://diet-tracker-lyart-ten.vercel.app
+```
+
+4. Fill in `.env.local`.
+
+Required variables:
+
+- `NEXT_PUBLIC_SUPABASE_URL`: Supabase project URL.
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Supabase anon key.
+- `APP_ALLOWED_EMAIL`: the only email allowed to use the API.
+- `OPENAI_API_KEY`: OpenAI API key for meal photo analysis.
+- `NEXT_PUBLIC_APP_URL`: app URL for the current environment.
+
+5. Run the app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+6. Open [http://localhost:3000](http://localhost:3000), create an account with
+   the configured `APP_ALLOWED_EMAIL`, then sign in and log a meal or symptom.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Storage Model
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Supabase is the source of truth:
 
-## Learn More
+- `meals`: meal descriptions, timestamps, photo paths, nutrition estimates,
+  assumptions, and optional correction fields.
+- `symptoms`: independent timestamped symptom notes with severity, tags, and
+  optional duration.
+- `meal-photos`: private storage bucket for uploaded meal photos.
 
-To learn more about Next.js, take a look at the following resources:
+OpenAI estimates are intentionally stored as estimates with confidence,
+assumptions, portion notes, notable ingredients, and broad possible trigger
+categories. Reports are recomputed from raw Supabase records.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Notes
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- The first version is single-user and enforces `APP_ALLOWED_EMAIL` on API
+  requests.
+- Supabase may require email confirmation on account creation depending on your
+  Auth settings.
+- The OpenAI API key stays on the server side.
+- Macro numbers are ballpark estimates for high-level trends, not precise diet
+  tracking.
+- Possible trigger associations are early heuristics, not medical guidance.
 
-## Deploy on Vercel
+## Deploying
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+When deploying on Vercel, set these environment variables in the Vercel project:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```text
+NEXT_PUBLIC_SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_ANON_KEY
+APP_ALLOWED_EMAIL
+OPENAI_API_KEY
+NEXT_PUBLIC_APP_URL
+OPENAI_MODEL
+```
+
+For the current Vercel app:
+
+```text
+NEXT_PUBLIC_APP_URL=https://diet-tracker-lyart-ten.vercel.app
+OPENAI_MODEL=gpt-5.5
+```
+
+After changing Vercel environment variables, redeploy the app.
