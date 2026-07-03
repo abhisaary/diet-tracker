@@ -638,11 +638,13 @@ export default function Home() {
 
   function renderMacroGrid(macros: MacroTotals, className = "") {
     return (
-      <div className={`grid grid-cols-2 gap-2 text-sm sm:grid-cols-5 ${className}`}>
+      <div className={`grid grid-cols-5 gap-1 text-xs ${className}`}>
         {getMacroItems(macros).map(([label, value]) => (
-          <div key={label}>
-            <p className="font-semibold">{value}</p>
-            <p className="text-xs text-slate-500">{label}</p>
+          <div className="min-w-0" key={label}>
+            <p className="truncate font-semibold leading-tight">{value}</p>
+            <p className="truncate text-[11px] leading-tight text-slate-500">
+              {label}
+            </p>
           </div>
         ))}
       </div>
@@ -664,7 +666,7 @@ export default function Home() {
 
     return (
       <article
-        className="rounded-2xl border border-slate-100 bg-slate-50 p-4"
+        className="rounded-2xl border border-slate-100 bg-slate-50 p-3"
         key={meal.id}
       >
         <button
@@ -673,9 +675,9 @@ export default function Home() {
           onClick={() => setExpandedMealId(isExpanded ? null : meal.id)}
           type="button"
         >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h3 className="text-base font-semibold text-slate-950">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <h3 className="truncate text-base font-semibold text-slate-950">
                 {getMealTitle(meal)}
               </h3>
               <p className="mt-1 text-xs font-medium text-slate-500">
@@ -686,11 +688,11 @@ export default function Home() {
               <ChevronIcon direction={isExpanded ? "up" : "down"} />
             </span>
           </div>
-          {renderMacroGrid(macros, "mt-3")}
+          {renderMacroGrid(macros, "mt-2")}
         </button>
 
         {isExpanded ? (
-          <div className="mt-4 border-t border-slate-200 pt-4">
+            <div className="mt-3 border-t border-slate-200 pt-3">
             {!isEditing ? (
               <>
                 <div className="flex items-start justify-between gap-3">
@@ -1019,23 +1021,14 @@ export default function Home() {
               </form>
             ) : null}
 
-            <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-lg font-semibold">Today&apos;s Meals</h2>
-                <button
-                  className="text-sm font-medium text-slate-600"
-                  onClick={() => loadMeals()}
-                  type="button"
-                >
-                  Refresh
-                </button>
-              </div>
+            <section className="rounded-3xl border border-slate-200 bg-white p-3 shadow-sm">
+              <h2 className="text-lg font-semibold">Today&apos;s Meals</h2>
 
-              <div className="mt-4 rounded-2xl bg-emerald-50 p-4">
+              <div className="mt-3 rounded-2xl bg-emerald-50 p-3">
                 <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
                   Today total
                 </p>
-                {renderMacroGrid(todayMacros, "mt-3")}
+                {renderMacroGrid(todayMacros, "mt-2")}
               </div>
 
               {todayMeals.length === 0 ? (
@@ -1043,7 +1036,7 @@ export default function Home() {
                   Meals you log today will show up here.
                 </p>
               ) : (
-                <div className="mt-4 flex flex-col gap-3">
+                <div className="mt-3 flex flex-col gap-2">
                   {todayMeals.map(renderMealCard)}
                 </div>
               )}
