@@ -898,8 +898,8 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-50 px-4 py-6 text-slate-950">
-      <div className="mx-auto flex max-w-2xl flex-col gap-4">
+    <main className="min-h-screen w-full overflow-x-hidden bg-slate-50 px-4 py-6 text-slate-950">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">
