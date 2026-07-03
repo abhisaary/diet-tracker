@@ -87,13 +87,6 @@ function toMealDraft(meal: MealRecord): MealEditDraft {
   };
 }
 
-function formatMealTime(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
 function formatMealTimeOfDay(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     timeStyle: "short",
@@ -188,7 +181,7 @@ function PencilIcon() {
   return (
     <svg
       aria-hidden="true"
-      className="h-5 w-5"
+      className="h-4 w-4"
       fill="none"
       stroke="currentColor"
       strokeLinecap="round"
@@ -206,7 +199,7 @@ function TrashIcon() {
   return (
     <svg
       aria-hidden="true"
-      className="h-5 w-5"
+      className="h-4 w-4"
       fill="none"
       stroke="currentColor"
       strokeLinecap="round"
@@ -692,24 +685,14 @@ export default function Home() {
         </button>
 
         {isExpanded ? (
-            <div className="mt-3 border-t border-slate-200 pt-3">
+          <div className="mt-3 border-t border-slate-200 pt-3">
             {!isEditing ? (
               <>
-                <div className="flex items-start justify-between gap-3">
-                  <p className="text-xs font-medium text-slate-500">
-                    {formatMealTime(meal.eatenAt)}
+                <div className="flex items-start gap-3">
+                  <p className="min-w-0 flex-1 text-sm leading-6 text-slate-700">
+                    {getCleanedDescription(meal)}
                   </p>
-                  <div className="flex items-center gap-3">
-                    <button
-                      aria-label={`Delete ${getMealTitle(meal)}`}
-                      className="rounded-full p-1 text-red-600 disabled:opacity-50"
-                      disabled={deletingMealId === meal.id}
-                      onClick={() => deleteMeal(meal.id)}
-                      title="Delete"
-                      type="button"
-                    >
-                      <TrashIcon />
-                    </button>
+                  <div className="flex shrink-0 items-center gap-1">
                     <button
                       aria-label={`Edit ${getMealTitle(meal)}`}
                       className="rounded-full p-1 text-slate-600"
@@ -722,12 +705,18 @@ export default function Home() {
                     >
                       <PencilIcon />
                     </button>
+                    <button
+                      aria-label={`Delete ${getMealTitle(meal)}`}
+                      className="rounded-full p-1 text-red-600 disabled:opacity-50"
+                      disabled={deletingMealId === meal.id}
+                      onClick={() => deleteMeal(meal.id)}
+                      title="Delete"
+                      type="button"
+                    >
+                      <TrashIcon />
+                    </button>
                   </div>
                 </div>
-
-                <p className="mt-3 text-sm leading-6 text-slate-700">
-                  {getCleanedDescription(meal)}
-                </p>
 
                 <div className="mt-4">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
