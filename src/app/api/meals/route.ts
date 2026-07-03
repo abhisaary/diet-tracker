@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { estimateMealNutrition } from "@/lib/openai-estimator";
+import type { MealRecord } from "@/lib/schemas";
 import { macroSchema, mealInputSchema } from "@/lib/schemas";
 import {
   deleteMeal,
@@ -75,6 +76,28 @@ function getEditedMealDescription({
     ingredients ? `Ingredients:\n${ingredients}` : "",
   ]
     .filter(Boolean)
+    .join("\n");
+}
+
+function formatRecentMealContext(meals: MealRecord[]) {
+  return meals
+    .slice(0, 12)
+    .map((meal) => {
+      const nutrition = meal.correctedNutrition ?? meal.nutrition;
+      const ingredients =
+        meal.nutrition.ingredientEstimates
+          ?.map((ingredient) => `${ingredient.name}: ${ingredient.amount}`)
+          .join("; ") || meal.nutrition.notableIngredients.join("; ");
+
+      return [
+        `- ${meal.nutrition.mealTitle || meal.description || "Meal"} (${meal.eatenAt})`,
+        `  Description: ${meal.nutrition.cleanedDescription || meal.description}`,
+        ingredients ? `  Ingredients: ${ingredients}` : "",
+        `  Macros: ${Math.round(nutrition.calories)} cal, ${Math.round(nutrition.proteinGrams)}g protein, ${Math.round(nutrition.carbsGrams)}g carbs, ${Math.round(nutrition.fatGrams)}g fat, ${Math.round(nutrition.fiberGrams)}g fiber`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
     .join("\n");
 }
 
@@ -175,10 +198,14 @@ export async function POST(request: Request) {
   const mimeType = hasPhoto ? photo.type || "image/jpeg" : undefined;
   const photoFileName =
     hasPhoto && mimeType ? `${id}.${getFileExtension(photo.name, mimeType)}` : undefined;
+  const recentMealContext = formatRecentMealContext(
+    await listMeals(auth.supabase, auth.user.id),
+  );
   const nutrition = await estimateMealNutrition({
     description,
     imageBytes,
     mimeType,
+    recentMealContext,
     restaurantLink: input.data.restaurantLink,
     submittedAt,
     timezone:

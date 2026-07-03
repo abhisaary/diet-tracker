@@ -135,6 +135,7 @@ export async function estimateMealNutrition({
   description,
   imageBytes,
   mimeType,
+  recentMealContext,
   restaurantLink,
   submittedAt,
   timezone,
@@ -142,6 +143,7 @@ export async function estimateMealNutrition({
   description: string;
   imageBytes?: Buffer;
   mimeType?: string;
+  recentMealContext?: string;
   restaurantLink?: string;
   submittedAt?: string;
   timezone?: string;
@@ -162,6 +164,9 @@ export async function estimateMealNutrition({
     "Return macroBreakdown using the same ingredients as ingredientEstimates. Each macroBasis should be a brief citation-like phrase such as 'typical cooked white rice, 1 cup' or 'plain Greek yogurt, 170 g'.",
     "Return calculationSummary as a concise one-sentence explanation of the ingredient-sum calculation. Return sanityCheck as one concise sentence noting whether the total looks plausible or what could swing it.",
     "Do not include hidden step-by-step reasoning; store only concise estimates, assumptions, calculationSummary, sanityCheck, and per-ingredient macroBasis.",
+    recentMealContext
+      ? "Recent meal context is provided below. Use it only when the user's description clearly refers to a prior meal, such as 'same salad as yesterday', 'the usual breakfast', or 'same as last night'. If the current photo or description conflicts with prior context, prefer the current photo/description. If you reuse prior context, mention the referenced meal in assumptions."
+      : "",
     "If the description clearly states or implies when the meal was eaten, return inferredMealTime as a UTC ISO 8601 timestamp ending in Z. Otherwise return null.",
     `The submission time is ${submittedAtIso}.`,
     timezone ? `The user's local timezone is ${timezone}. Use it to resolve relative phrases like this morning, last night, yesterday, or 30 minutes ago.` : "",
@@ -170,6 +175,7 @@ export async function estimateMealNutrition({
     "",
     `Description: ${description || "No written description provided."}`,
     restaurantLink ? `Restaurant/menu link: ${restaurantLink}` : "",
+    recentMealContext ? `Recent meals:\n${recentMealContext}` : "",
   ]
     .filter(Boolean)
     .join("\n");
