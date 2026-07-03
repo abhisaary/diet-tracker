@@ -654,6 +654,7 @@ export default function Home() {
             amount: "estimated amount",
             name,
           }));
+    const macroBreakdown = meal.nutrition.macroBreakdown ?? [];
     const isEditing = editingMealId === meal.id;
     const isExpanded = expandedMealId === meal.id || isEditing;
 
@@ -717,6 +718,57 @@ export default function Home() {
                     </button>
                   </div>
                 </div>
+
+                {macroBreakdown.length > 0 ? (
+                  <details className="mt-4 rounded-2xl border border-slate-200 bg-white">
+                    <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-slate-700">
+                      Ingredient macro breakdown
+                    </summary>
+                    <div className="overflow-x-auto border-t border-slate-100">
+                      <table className="min-w-full text-left text-xs text-slate-700">
+                        <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+                          <tr>
+                            <th className="px-3 py-2 font-semibold">Ingredient</th>
+                            <th className="px-3 py-2 font-semibold">Amount</th>
+                            <th className="px-3 py-2 font-semibold">Cal</th>
+                            <th className="px-3 py-2 font-semibold">P</th>
+                            <th className="px-3 py-2 font-semibold">C</th>
+                            <th className="px-3 py-2 font-semibold">F</th>
+                            <th className="px-3 py-2 font-semibold">Fiber</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {macroBreakdown.map((ingredient) => (
+                            <tr
+                              className="border-t border-slate-100"
+                              key={`${ingredient.name}-${ingredient.amount}`}
+                            >
+                              <td className="px-3 py-2 font-medium text-slate-950">
+                                {ingredient.name}
+                              </td>
+                              <td className="px-3 py-2">{ingredient.amount}</td>
+                              <td className="px-3 py-2">
+                                {Math.round(ingredient.calories)}
+                              </td>
+                              <td className="px-3 py-2">
+                                {Math.round(ingredient.proteinGrams)}g
+                              </td>
+                              <td className="px-3 py-2">
+                                {Math.round(ingredient.carbsGrams)}g
+                              </td>
+                              <td className="px-3 py-2">
+                                {Math.round(ingredient.fatGrams)}g
+                              </td>
+                              <td className="px-3 py-2">
+                                {Math.round(ingredient.fiberGrams)}g
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                ) : null}
 
                 <div className="mt-4">
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
