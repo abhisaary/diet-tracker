@@ -28,10 +28,21 @@ const ingredientMacroEstimateSchema = ingredientEstimateSchema.extend({
   macroBasis: z.string(),
 });
 
+export const trackedNutrientSchema = z.object({
+  name: z.string().trim().min(1),
+  unit: z.string().trim().min(1),
+});
+
+const customNutrientEstimateSchema = trackedNutrientSchema.extend({
+  amount: z.number().nonnegative(),
+  confidence: z.enum(["low", "medium", "high"]),
+});
+
 export const nutritionEstimateSchema = macroSchema.extend({
   calculationSummary: z.string().optional(),
   cleanedDescription: z.string().optional(),
   confidence: z.enum(["low", "medium", "high"]),
+  customNutrients: z.array(customNutrientEstimateSchema).optional(),
   estimatedPortion: z.string(),
   ingredientEstimates: z.array(ingredientEstimateSchema).optional(),
   inferredMealTime: z.string().datetime().nullable(),
@@ -128,6 +139,7 @@ export const reportSummarySchema = z.object({
 
 export type MacroTotals = z.infer<typeof macroSchema>;
 export type NutritionEstimate = z.infer<typeof nutritionEstimateSchema>;
+export type TrackedNutrient = z.infer<typeof trackedNutrientSchema>;
 export type MealRecord = z.infer<typeof mealRecordSchema>;
 export type SymptomRecord = z.infer<typeof symptomRecordSchema>;
 export type TimelineItem = z.infer<typeof timelineItemSchema>;

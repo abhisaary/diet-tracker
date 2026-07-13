@@ -71,6 +71,15 @@ function getBearerToken(request: Request) {
   return authorization.slice("Bearer ".length);
 }
 
+function getAllowedEmails() {
+  return [
+    ...(getOptionalEnv("APP_ALLOWED_EMAILS") ?? "").split(","),
+    getOptionalEnv("APP_ALLOWED_EMAIL") ?? "",
+  ]
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 export async function getAuthenticatedSupabase(
   request: Request,
 ): Promise<AuthenticatedSupabase | null> {
@@ -87,10 +96,10 @@ export async function getAuthenticatedSupabase(
     return null;
   }
 
-  const allowedEmail = getOptionalEnv("APP_ALLOWED_EMAIL")?.toLowerCase();
+  const allowedEmails = getAllowedEmails();
   const userEmail = data.user.email?.toLowerCase();
 
-  if (!allowedEmail || userEmail !== allowedEmail) {
+  if (!userEmail || !allowedEmails.includes(userEmail)) {
     return null;
   }
 

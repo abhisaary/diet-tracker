@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { z } from "zod";
 
 import { getEnv, getOptionalEnv } from "@/lib/env";
-import type { NutritionEstimate } from "@/lib/schemas";
+import type { NutritionEstimate, TrackedNutrient } from "@/lib/schemas";
 
 const estimateResponseSchema = z.object({
   calories: z.number().nonnegative(),
@@ -13,6 +13,14 @@ const estimateResponseSchema = z.object({
   fatGrams: z.number().nonnegative(),
   fiberGrams: z.number().nonnegative(),
   confidence: z.enum(["low", "medium", "high"]),
+  customNutrients: z.array(
+    z.object({
+      amount: z.number().nonnegative(),
+      confidence: z.enum(["low", "medium", "high"]),
+      name: z.string(),
+      unit: z.string(),
+    }),
+  ),
   estimatedPortion: z.string(),
   ingredientEstimates: z.array(
     z.object({
@@ -52,6 +60,20 @@ const estimateJsonSchema = {
     fatGrams: { type: "number", minimum: 0 },
     fiberGrams: { type: "number", minimum: 0 },
     confidence: { type: "string", enum: ["low", "medium", "high"] },
+    customNutrients: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          amount: { type: "number", minimum: 0 },
+          confidence: { type: "string", enum: ["low", "medium", "high"] },
+          name: { type: "string" },
+          unit: { type: "string" },
+        },
+        required: ["name", "unit", "amount", "confidence"],
+      },
+    },
     estimatedPortion: { type: "string" },
     ingredientEstimates: {
       type: "array",
@@ -119,6 +141,7 @@ const estimateJsonSchema = {
     "fatGrams",
     "fiberGrams",
     "confidence",
+    "customNutrients",
     "estimatedPortion",
     "ingredientEstimates",
     "inferredMealTime",
@@ -139,6 +162,7 @@ export async function estimateMealNutrition({
   restaurantLink,
   submittedAt,
   timezone,
+  trackedNutrients,
 }: {
   description: string;
   imageBytes?: Buffer;
@@ -147,6 +171,7 @@ export async function estimateMealNutrition({
   restaurantLink?: string;
   submittedAt?: string;
   timezone?: string;
+  trackedNutrients?: TrackedNutrient[];
 }): Promise<NutritionEstimate> {
   const model = getOptionalEnv("OPENAI_MODEL") ?? "gpt-5.5";
   const client = new OpenAI({ apiKey: getEnv("OPENAI_API_KEY") });
@@ -162,6 +187,9 @@ export async function estimateMealNutrition({
     "Return cleanedDescription as a concise normalized meal description suitable for a meal log.",
     "Return ingredientEstimates as a complete ingredient list with approximate amounts per ingredient.",
     "Return macroBreakdown using the same ingredients as ingredientEstimates. Each macroBasis should be a brief citation-like phrase such as 'typical cooked white rice, 1 cup' or 'plain Greek yogurt, 170 g'.",
+    trackedNutrients?.length
+      ? `Also estimate these user-selected nutrients and return them in customNutrients using exactly these names and units: ${trackedNutrients.map((nutrient) => `${nutrient.name} (${nutrient.unit})`).join(", ")}.`
+      : "Return customNutrients as an empty array because the user has not selected additional nutrients.",
     "Return calculationSummary as a concise one-sentence explanation of the ingredient-sum calculation. Return sanityCheck as one concise sentence noting whether the total looks plausible or what could swing it.",
     "Do not include hidden step-by-step reasoning; store only concise estimates, assumptions, calculationSummary, sanityCheck, and per-ingredient macroBasis.",
     recentMealContext

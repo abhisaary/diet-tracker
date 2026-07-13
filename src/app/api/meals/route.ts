@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { estimateMealNutrition } from "@/lib/openai-estimator";
 import type { MealRecord } from "@/lib/schemas";
-import { mealInputSchema } from "@/lib/schemas";
+import { mealInputSchema, trackedNutrientSchema } from "@/lib/schemas";
 import {
   deleteMeal,
   downloadMealPhoto,
@@ -75,6 +75,12 @@ function formatRecentMealContext(meals: MealRecord[]) {
         .join("\n");
     })
     .join("\n");
+}
+
+function getTrackedNutrients(value: unknown) {
+  const parsed = z.array(trackedNutrientSchema).safeParse(value);
+
+  return parsed.success ? parsed.data : [];
 }
 
 function formatMealForCorrection(meal: MealRecord, correction: string) {
@@ -207,6 +213,9 @@ export async function POST(request: Request) {
   const recentMealContext = formatRecentMealContext(
     await listMeals(auth.supabase, auth.user.id),
   );
+  const trackedNutrients = getTrackedNutrients(
+    auth.user.user_metadata?.trackedNutrients,
+  );
   const nutrition = await estimateMealNutrition({
     description,
     imageBytes,
@@ -218,6 +227,7 @@ export async function POST(request: Request) {
       typeof formData.get("timezone") === "string"
         ? (formData.get("timezone") as string)
         : undefined,
+    trackedNutrients,
   });
   const eatenAt = nutrition.inferredMealTime ?? input.data.eatenAt ?? submittedAt;
   const datePath = eatenAt.slice(0, 10);
@@ -271,6 +281,9 @@ export async function PATCH(request: Request) {
     restaurantLink: existingMeal.restaurantLink,
     submittedAt: existingMeal.createdAt,
     timezone: input.data.timezone,
+    trackedNutrients: getTrackedNutrients(
+      auth.user.user_metadata?.trackedNutrients,
+    ),
   });
   const meal = await replaceMealNutrition({
     correctionNote: getNextCorrectionNote(

@@ -38,7 +38,8 @@ Required variables:
 
 - `NEXT_PUBLIC_SUPABASE_URL`: Supabase project URL.
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Supabase anon key.
-- `APP_ALLOWED_EMAIL`: the only email allowed to use the API.
+- `APP_ALLOWED_EMAILS`: comma-separated emails allowed to use the API.
+  `APP_ALLOWED_EMAIL` is still supported for a single email.
 - `OPENAI_API_KEY`: OpenAI API key for meal photo analysis.
 - `NEXT_PUBLIC_APP_URL`: app URL for the current environment.
 
@@ -49,7 +50,7 @@ npm run dev
 ```
 
 6. Open [http://localhost:3000](http://localhost:3000), create an account with
-   the configured `APP_ALLOWED_EMAIL`, then sign in and log a meal or symptom.
+   a configured allowed email, then sign in and log a meal or symptom.
 
 ## Storage Model
 
@@ -67,8 +68,8 @@ categories. Reports are recomputed from raw Supabase records.
 
 ## Notes
 
-- The first version is single-user and enforces `APP_ALLOWED_EMAIL` on API
-  requests.
+- This version uses a simple allowed-email gate on API requests. Supabase rows
+  are still user-scoped, so allowing a second email does not mix user data.
 - Supabase may require email confirmation on account creation depending on your
   Auth settings.
 - The OpenAI API key stays on the server side.
@@ -84,6 +85,7 @@ When deploying on Vercel, set these environment variables in the Vercel project:
 NEXT_PUBLIC_SUPABASE_URL
 NEXT_PUBLIC_SUPABASE_ANON_KEY
 APP_ALLOWED_EMAIL
+APP_ALLOWED_EMAILS
 OPENAI_API_KEY
 NEXT_PUBLIC_APP_URL
 OPENAI_MODEL

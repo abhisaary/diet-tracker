@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-import type { MealRecord, MacroTotals } from "@/lib/schemas";
+import type { MealRecord, MacroTotals, TrackedNutrient } from "@/lib/schemas";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
 
 type AppStatus = {
@@ -12,6 +12,44 @@ type AppStatus = {
     supabase: boolean;
   };
 };
+
+type CoreMacroKey = keyof MacroTotals;
+type CustomNutrientItem = TrackedNutrient & {
+  amount: number;
+  estimatedMeals: number;
+};
+
+const coreMacroItems: {
+  format: (macros: MacroTotals) => string;
+  key: CoreMacroKey;
+  label: string;
+}[] = [
+  {
+    format: (macros) => Math.round(macros.calories).toString(),
+    key: "calories",
+    label: "cal",
+  },
+  {
+    format: (macros) => `${Math.round(macros.proteinGrams)}g`,
+    key: "proteinGrams",
+    label: "protein",
+  },
+  {
+    format: (macros) => `${Math.round(macros.carbsGrams)}g`,
+    key: "carbsGrams",
+    label: "carbs",
+  },
+  {
+    format: (macros) => `${Math.round(macros.fatGrams)}g`,
+    key: "fatGrams",
+    label: "fat",
+  },
+  {
+    format: (macros) => `${Math.round(macros.fiberGrams)}g`,
+    key: "fiberGrams",
+    label: "fiber",
+  },
+];
 
 function getMealMacros(meal: MealRecord): MacroTotals {
   return meal.correctedNutrition ?? meal.nutrition;
@@ -99,14 +137,219 @@ function getMealMacroTotals(meals: MealRecord[]): MacroTotals {
   );
 }
 
-function getMacroItems(macros: MacroTotals) {
+function isCoreMacroKey(value: unknown): value is CoreMacroKey {
+  return (
+    typeof value === "string" &&
+    coreMacroItems.some((macroItem) => macroItem.key === value)
+  );
+}
+
+function parseHiddenCoreNutrients(value: unknown): CoreMacroKey[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter(isCoreMacroKey);
+}
+
+function getCoreNutrientId(key: CoreMacroKey) {
+  return `core:${key}`;
+}
+
+function getCustomNutrientId(nutrient: Pick<TrackedNutrient, "name">) {
+  return `custom:${nutrient.name}`;
+}
+
+function parseNutrientOrder(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function getDefaultNutrientOrder(trackedNutrients: TrackedNutrient[]) {
   return [
-    ["cal", Math.round(macros.calories).toString()],
-    ["protein", `${Math.round(macros.proteinGrams)}g`],
-    ["carbs", `${Math.round(macros.carbsGrams)}g`],
-    ["fat", `${Math.round(macros.fatGrams)}g`],
-    ["fiber", `${Math.round(macros.fiberGrams)}g`],
-  ] as const;
+    ...coreMacroItems.map((macroItem) => getCoreNutrientId(macroItem.key)),
+    ...trackedNutrients.map(getCustomNutrientId),
+  ];
+}
+
+function reconcileNutrientOrder(
+  order: string[],
+  trackedNutrients: TrackedNutrient[],
+) {
+  const availableIds = new Set(getDefaultNutrientOrder(trackedNutrients));
+  const orderedIds = order.filter((item) => availableIds.has(item));
+  const missingIds = [...availableIds].filter((item) => !orderedIds.includes(item));
+
+  return [...orderedIds, ...missingIds];
+}
+
+function areStringArraysEqual(first: string[], second: string[]) {
+  return first.length === second.length && first.every((item, index) => item === second[index]);
+}
+
+function areTrackedNutrientsEqual(
+  first: TrackedNutrient[],
+  second: TrackedNutrient[],
+) {
+  return (
+    first.length === second.length &&
+    first.every(
+      (item, index) =>
+        item.name === second[index]?.name && item.unit === second[index]?.unit,
+    )
+  );
+}
+
+function getOrderedNutrientItems({
+  customNutrients,
+  hiddenCoreNutrients,
+  macros,
+  nutrientOrder,
+}: {
+  customNutrients: CustomNutrientItem[];
+  hiddenCoreNutrients: CoreMacroKey[];
+  macros: MacroTotals;
+  nutrientOrder: string[];
+}) {
+  return reconcileNutrientOrder(nutrientOrder, customNutrients).flatMap((id) => {
+    if (id.startsWith("core:")) {
+      const key = id.slice("core:".length);
+
+      if (!isCoreMacroKey(key) || hiddenCoreNutrients.includes(key)) {
+        return [];
+      }
+
+      const macroItem = coreMacroItems.find((item) => item.key === key);
+
+      return macroItem
+        ? [
+            {
+              id,
+              label: macroItem.label,
+              value: macroItem.format(macros),
+            },
+          ]
+        : [];
+    }
+
+    const name = id.slice("custom:".length);
+    const nutrient = customNutrients.find(
+      (customNutrient) => customNutrient.name === name,
+    );
+
+    if (!nutrient) {
+      return [];
+    }
+
+    return [
+      {
+        id,
+        label: formatNutrientName(nutrient.name),
+        value:
+          nutrient.estimatedMeals > 0
+            ? formatCustomNutrientAmount(nutrient.amount, nutrient.unit)
+            : "--",
+      },
+    ];
+  });
+}
+
+function normalizeNutrientName(value: string) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function formatNutrientName(value: string) {
+  return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function inferStandardNutrientUnit(name: string) {
+  if (name.includes("vitamin d")) {
+    return "IU";
+  }
+
+  if (
+    name.includes("sugar") ||
+    name.includes("fiber") ||
+    name.includes("fat") ||
+    name.includes("protein") ||
+    name.includes("carb")
+  ) {
+    return "g";
+  }
+
+  return "mg";
+}
+
+function parseTrackedNutrients(value: unknown): TrackedNutrient[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((nutrient) => {
+      if (
+        !nutrient ||
+        typeof nutrient !== "object" ||
+        !("name" in nutrient)
+      ) {
+        return null;
+      }
+
+      const name = normalizeNutrientName(String(nutrient.name));
+      const unit =
+        "unit" in nutrient && nutrient.unit
+          ? String(nutrient.unit).trim()
+          : inferStandardNutrientUnit(name);
+
+      return name && unit ? { name, unit } : null;
+    })
+    .filter((nutrient): nutrient is TrackedNutrient => Boolean(nutrient));
+}
+
+function parseTrackedNutrientInput(value: string): TrackedNutrient | null {
+  const name = normalizeNutrientName(value);
+
+  if (!name) {
+    return null;
+  }
+
+  return { name, unit: inferStandardNutrientUnit(name) };
+}
+
+function getCustomNutrientAmount(meal: MealRecord, nutrient: TrackedNutrient) {
+  return (
+    meal.nutrition.customNutrients?.find(
+      (customNutrient) =>
+        normalizeNutrientName(customNutrient.name) === nutrient.name &&
+        customNutrient.unit.toLowerCase() === nutrient.unit.toLowerCase(),
+    )?.amount ?? null
+  );
+}
+
+function getCustomNutrientItems(
+  meals: MealRecord[],
+  trackedNutrients: TrackedNutrient[],
+) {
+  return trackedNutrients.map((nutrient) => ({
+    ...nutrient,
+    amount: meals.reduce((total, meal) => {
+      const amount = getCustomNutrientAmount(meal, nutrient);
+
+      return amount === null ? total : total + amount;
+    }, 0),
+    estimatedMeals: meals.filter(
+      (meal) => getCustomNutrientAmount(meal, nutrient) !== null,
+    ).length,
+  }));
+}
+
+function formatCustomNutrientAmount(amount: number, unit: string) {
+  const rounded = amount >= 10 ? Math.round(amount) : Math.round(amount * 10) / 10;
+
+  return `${rounded}${unit === "amount" ? "" : unit}`;
 }
 
 function ChevronIcon({ direction }: { direction: "down" | "up" }) {
@@ -165,6 +408,84 @@ function TrashIcon() {
   );
 }
 
+function DragHandleIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M5 7h14" />
+      <path d="M5 12h14" />
+      <path d="M5 17h14" />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M3 3l18 18" />
+      <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8" />
+      <path d="M9.9 5.2A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a17.2 17.2 0 0 1-3.2 4.1" />
+      <path d="M6.1 6.6C3.5 8.2 2 12 2 12s3.5 7 10 7a10.7 10.7 0 0 0 5-1.2" />
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M4 7h10" />
+      <path d="M18 7h2" />
+      <circle cx="16" cy="7" r="2" />
+      <path d="M4 17h2" />
+      <path d="M10 17h10" />
+      <circle cx="8" cy="17" r="2" />
+    </svg>
+  );
+}
+
 function toStatusMessage(
   kind: "error" | "success" | null,
   message: string | null,
@@ -196,15 +517,31 @@ export default function Home() {
   const [activeForm, setActiveForm] = useState<"meal" | "symptom" | null>(null);
   const [authPending, setAuthPending] = useState(false);
   const [deletingMealId, setDeletingMealId] = useState<string | null>(null);
+  const [draftHiddenCoreNutrients, setDraftHiddenCoreNutrients] = useState<
+    CoreMacroKey[]
+  >([]);
+  const [draggedNutrientId, setDraggedNutrientId] = useState<string | null>(null);
+  const [draftNutrientOrder, setDraftNutrientOrder] = useState<string[]>([]);
+  const [draftTrackedNutrients, setDraftTrackedNutrients] = useState<
+    TrackedNutrient[]
+  >([]);
   const [editingMealId, setEditingMealId] = useState<string | null>(null);
   const [expandedMealId, setExpandedMealId] = useState<string | null>(null);
+  const [hiddenCoreNutrients, setHiddenCoreNutrients] = useState<CoreMacroKey[]>(
+    [],
+  );
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [mealCorrections, setMealCorrections] = useState<Record<string, string>>({});
   const [mealPending, setMealPending] = useState(false);
   const [meals, setMeals] = useState<MealRecord[]>([]);
+  const [newTrackedNutrient, setNewTrackedNutrient] = useState("");
+  const [nutrientOrder, setNutrientOrder] = useState<string[]>([]);
   const [savingMealId, setSavingMealId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPending, setSettingsPending] = useState(false);
   const [showFullLog, setShowFullLog] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [message, setMessage] = useState<{
     kind: "error" | "success";
     text: string;
@@ -212,11 +549,32 @@ export default function Home() {
   const [messageVisible, setMessageVisible] = useState(false);
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [symptomPending, setSymptomPending] = useState(false);
+  const [trackedNutrients, setTrackedNutrients] = useState<TrackedNutrient[]>([]);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
   function showMessage(nextMessage: { kind: "error" | "success"; text: string }) {
     setMessageVisible(true);
     setMessage(nextMessage);
+  }
+
+  function applyUserSettings(metadata: Record<string, unknown> | undefined) {
+    const nextTrackedNutrients = parseTrackedNutrients(
+      metadata?.trackedNutrients,
+    );
+    const nextHiddenCoreNutrients = parseHiddenCoreNutrients(
+      metadata?.hiddenCoreNutrients,
+    );
+    const nextNutrientOrder = reconcileNutrientOrder(
+      parseNutrientOrder(metadata?.nutrientOrder),
+      nextTrackedNutrients,
+    );
+
+    setTrackedNutrients(nextTrackedNutrients);
+    setHiddenCoreNutrients(nextHiddenCoreNutrients);
+    setNutrientOrder(nextNutrientOrder);
+    setDraftTrackedNutrients(nextTrackedNutrients);
+    setDraftHiddenCoreNutrients(nextHiddenCoreNutrients);
+    setDraftNutrientOrder(nextNutrientOrder);
   }
 
   useEffect(() => {
@@ -231,6 +589,7 @@ export default function Home() {
       const token = data.session?.access_token ?? null;
       setAccessToken(token);
       setUserEmail(data.session?.user.email ?? null);
+      applyUserSettings(data.session?.user.user_metadata);
       if (token) {
         loadMeals(token);
       }
@@ -242,10 +601,19 @@ export default function Home() {
       const token = session?.access_token ?? null;
       setAccessToken(token);
       setUserEmail(session?.user.email ?? null);
+      applyUserSettings(session?.user.user_metadata);
       if (token) {
         loadMeals(token);
       } else {
+        setDraftHiddenCoreNutrients([]);
+        setDraftNutrientOrder([]);
+        setDraftTrackedNutrients([]);
+        setHiddenCoreNutrients([]);
         setMeals([]);
+        setNutrientOrder([]);
+        setAccountMenuOpen(false);
+        setSettingsOpen(false);
+        setTrackedNutrients([]);
       }
     });
 
@@ -274,6 +642,23 @@ export default function Home() {
         .map(([name]) => name)
     : [];
 
+  function closeSettings() {
+    setSettingsOpen(false);
+    setNewTrackedNutrient("");
+    setDraftHiddenCoreNutrients(hiddenCoreNutrients);
+    setDraftNutrientOrder(nutrientOrder);
+    setDraftTrackedNutrients(trackedNutrients);
+  }
+
+  function openSettings() {
+    setAccountMenuOpen(false);
+    setDraftHiddenCoreNutrients(hiddenCoreNutrients);
+    setDraftNutrientOrder(nutrientOrder);
+    setDraftTrackedNutrients(trackedNutrients);
+    setNewTrackedNutrient("");
+    setSettingsOpen(true);
+  }
+
   async function authenticatedFetch(input: RequestInfo, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
 
@@ -282,6 +667,109 @@ export default function Home() {
     }
 
     return fetch(input, { ...init, headers });
+  }
+
+  async function saveUserSettings() {
+    setSettingsPending(true);
+    setMessage(null);
+
+    try {
+      const { data, error } = await supabase.auth.updateUser({
+        data: {
+          hiddenCoreNutrients: draftHiddenCoreNutrients,
+          nutrientOrder: reconcileNutrientOrder(
+            draftNutrientOrder,
+            draftTrackedNutrients,
+          ),
+          trackedNutrients: draftTrackedNutrients,
+        },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      applyUserSettings(data.user.user_metadata);
+      setSettingsOpen(false);
+      setNewTrackedNutrient("");
+    } catch (error) {
+      showMessage({
+        kind: "error",
+        text:
+          error instanceof Error ? error.message : "Could not update settings.",
+      });
+    } finally {
+      setSettingsPending(false);
+    }
+  }
+
+  function toggleDraftCoreNutrient(key: CoreMacroKey) {
+    setDraftHiddenCoreNutrients((current) =>
+      current.includes(key)
+        ? current.filter((hiddenKey) => hiddenKey !== key)
+        : [...current, key],
+    );
+  }
+
+  function moveDraftNutrientBefore(draggedId: string, targetId: string) {
+    if (draggedId === targetId) {
+      return;
+    }
+
+    setDraftNutrientOrder((current) => {
+      const nextOrder = reconcileNutrientOrder(current, draftTrackedNutrients);
+      const draggedIndex = nextOrder.indexOf(draggedId);
+      const targetIndex = nextOrder.indexOf(targetId);
+
+      if (draggedIndex === -1 || targetIndex === -1) {
+        return nextOrder;
+      }
+
+      const reordered = [...nextOrder];
+      const [item] = reordered.splice(draggedIndex, 1);
+      const adjustedTargetIndex =
+        draggedIndex < targetIndex ? targetIndex - 1 : targetIndex;
+
+      reordered.splice(adjustedTargetIndex, 0, item);
+
+      return reordered;
+    });
+  }
+
+  function addTrackedNutrient(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const nutrient = parseTrackedNutrientInput(newTrackedNutrient);
+
+    if (!nutrient) {
+      showMessage({ kind: "error", text: "Add a nutrient name first." });
+      return;
+    }
+
+    const alreadyTracked = draftTrackedNutrients.some(
+      (trackedNutrient) => trackedNutrient.name === nutrient.name,
+    );
+
+    if (alreadyTracked) {
+      showMessage({ kind: "error", text: "That nutrient is already tracked." });
+      return;
+    }
+
+    setDraftTrackedNutrients((current) => [...current, nutrient]);
+    setDraftNutrientOrder((current) => [
+      ...reconcileNutrientOrder(current, draftTrackedNutrients),
+      getCustomNutrientId(nutrient),
+    ]);
+    setNewTrackedNutrient("");
+  }
+
+  function removeTrackedNutrient(nutrient: TrackedNutrient) {
+    setDraftTrackedNutrients((current) =>
+      current.filter((trackedNutrient) => trackedNutrient.name !== nutrient.name),
+    );
+    setDraftNutrientOrder((current) =>
+      current.filter((id) => id !== getCustomNutrientId(nutrient)),
+    );
   }
 
   async function loadMeals(token = accessToken) {
@@ -521,7 +1009,23 @@ export default function Home() {
 
   const todayMeals = meals.filter(isMealToday);
   const todayMacros = getMealMacroTotals(todayMeals);
+  const todayCustomNutrients = getCustomNutrientItems(
+    todayMeals,
+    trackedNutrients,
+  );
   const todayDayKey = getLocalDayKey(new Date().toISOString());
+  const savedNutrientOrder = reconcileNutrientOrder(
+    nutrientOrder,
+    trackedNutrients,
+  );
+  const draftSavedNutrientOrder = reconcileNutrientOrder(
+    draftNutrientOrder,
+    draftTrackedNutrients,
+  );
+  const settingsChanged =
+    !areStringArraysEqual(hiddenCoreNutrients, draftHiddenCoreNutrients) ||
+    !areStringArraysEqual(savedNutrientOrder, draftSavedNutrientOrder) ||
+    !areTrackedNutrientsEqual(trackedNutrients, draftTrackedNutrients);
   const mealsByDay = meals.reduce<
     { dayKey: string; dayLabel: string; meals: MealRecord[] }[]
   >((groups, meal) => {
@@ -545,11 +1049,32 @@ export default function Home() {
     (group) => group.dayKey !== todayDayKey,
   );
 
-  function renderMacroGrid(macros: MacroTotals, className = "") {
+  function renderNutrientGrid({
+    customNutrients,
+    macros,
+    className = "",
+  }: {
+    customNutrients: CustomNutrientItem[];
+    macros: MacroTotals;
+    className?: string;
+  }) {
+    const nutrientItems = getOrderedNutrientItems({
+      customNutrients,
+      hiddenCoreNutrients,
+      macros,
+      nutrientOrder,
+    });
+
+    if (nutrientItems.length === 0) {
+      return null;
+    }
+
     return (
-      <div className={`grid grid-cols-5 gap-1 text-xs ${className}`}>
-        {getMacroItems(macros).map(([label, value]) => (
-          <div className="min-w-0" key={label}>
+      <div
+        className={`flex flex-wrap items-start gap-x-6 gap-y-2 text-xs ${className}`}
+      >
+        {nutrientItems.map(({ id, label, value }) => (
+          <div className="min-w-14 max-w-24" key={id}>
             <p className="truncate font-semibold leading-tight">{value}</p>
             <p className="truncate text-[11px] leading-tight text-slate-500">
               {label}
@@ -562,6 +1087,7 @@ export default function Home() {
 
   function renderMealCard(meal: MealRecord) {
     const macros = getMealMacros(meal);
+    const customNutrients = getCustomNutrientItems([meal], trackedNutrients);
     const ingredients =
       meal.nutrition.ingredientEstimates?.length
         ? meal.nutrition.ingredientEstimates
@@ -597,7 +1123,11 @@ export default function Home() {
               <ChevronIcon direction={isExpanded ? "up" : "down"} />
             </span>
           </div>
-          {renderMacroGrid(macros, "mt-2")}
+          {renderNutrientGrid({
+            className: "mt-2",
+            customNutrients,
+            macros,
+          })}
         </button>
 
         {isExpanded ? (
@@ -755,15 +1285,50 @@ export default function Home() {
             </h1>
           </div>
           {accessToken ? (
-            <button
-              aria-label={`Signed in as ${userEmail ?? "user"}. Sign out.`}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white"
-              onClick={() => supabase.auth.signOut()}
-              title={`Signed in${userEmail ? ` as ${userEmail}` : ""}. Tap to sign out.`}
-              type="button"
-            >
-              {(userEmail?.[0] ?? "U").toUpperCase()}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                aria-label="Open settings"
+                className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm ${
+                  settingsOpen ? "ring-4 ring-emerald-100" : ""
+                }`}
+                onClick={() => (settingsOpen ? closeSettings() : openSettings())}
+                title="Settings"
+                type="button"
+              >
+                <SettingsIcon />
+              </button>
+              <div className="relative">
+                <button
+                  aria-expanded={accountMenuOpen}
+                  aria-label={`Account menu${userEmail ? ` for ${userEmail}` : ""}`}
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white"
+                  onClick={() => setAccountMenuOpen((value) => !value)}
+                  title={userEmail ? `Signed in as ${userEmail}` : "Account"}
+                  type="button"
+                >
+                  {(userEmail?.[0] ?? "U").toUpperCase()}
+                </button>
+                {accountMenuOpen ? (
+                  <div className="absolute right-0 top-12 z-20 w-44 rounded-2xl border border-slate-200 bg-white p-2 text-sm shadow-lg">
+                    {userEmail ? (
+                      <p className="truncate px-3 py-2 text-xs text-slate-500">
+                        {userEmail}
+                      </p>
+                    ) : null}
+                    <button
+                      className="w-full rounded-xl px-3 py-2 text-left font-semibold text-red-600 hover:bg-red-50"
+                      onClick={() => {
+                        setAccountMenuOpen(false);
+                        supabase.auth.signOut();
+                      }}
+                      type="button"
+                    >
+                      Log out
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
           ) : null}
         </div>
 
@@ -911,7 +1476,11 @@ export default function Home() {
                 <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
                   Today total
                 </p>
-                {renderMacroGrid(todayMacros, "mt-2")}
+                {renderNutrientGrid({
+                  className: "mt-2",
+                  customNutrients: todayCustomNutrients,
+                  macros: todayMacros,
+                })}
               </div>
 
               {todayMeals.length === 0 ? (
@@ -954,6 +1523,196 @@ export default function Home() {
           </>
         )}
       </div>
+      {accessToken && settingsOpen ? (
+        <div className="fixed inset-0 z-50 flex items-end bg-slate-950/40 p-4 sm:items-center sm:justify-center">
+          <button
+            aria-label="Close settings"
+            className="absolute inset-0 h-full w-full cursor-default"
+            onClick={closeSettings}
+            type="button"
+          />
+          <section
+            aria-modal="true"
+            className="relative z-10 max-h-[85vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
+            role="dialog"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold">Settings</h2>
+                <p className="mt-1 text-sm leading-6 text-slate-500">
+                  Choose which nutrients appear in the meal cards. The model
+                  still estimates everything it needs in the background.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5">
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Nutrients
+              </p>
+              <div className="mt-2 divide-y divide-slate-100 rounded-2xl border border-slate-200">
+                {reconcileNutrientOrder(
+                  draftNutrientOrder,
+                  draftTrackedNutrients,
+                ).map((id) => {
+                  if (id.startsWith("core:")) {
+                    const key = id.slice("core:".length);
+
+                    if (!isCoreMacroKey(key)) {
+                      return null;
+                    }
+
+                    const macroItem = coreMacroItems.find(
+                      (item) => item.key === key,
+                    );
+                    const isHidden = draftHiddenCoreNutrients.includes(key);
+
+                    if (!macroItem) {
+                      return null;
+                    }
+
+                    return (
+                      <div
+                        className={`flex items-center justify-between gap-3 px-3 py-2 ${
+                          draggedNutrientId === id ? "bg-emerald-50" : ""
+                        }`}
+                        onDragOver={(event) => event.preventDefault()}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          if (draggedNutrientId) {
+                            moveDraftNutrientBefore(draggedNutrientId, id);
+                          }
+                          setDraggedNutrientId(null);
+                        }}
+                        key={id}
+                      >
+                        <span
+                          className="cursor-grab text-slate-400 active:cursor-grabbing"
+                          draggable={!settingsPending}
+                          onDragEnd={() => setDraggedNutrientId(null)}
+                          onDragStart={(event) => {
+                            event.dataTransfer.effectAllowed = "move";
+                            event.dataTransfer.setData("text/plain", id);
+                            setDraggedNutrientId(id);
+                          }}
+                        >
+                          <DragHandleIcon />
+                        </span>
+                        <span className="min-w-0 flex-1 text-sm font-medium text-slate-800">
+                          {formatNutrientName(macroItem.label)}
+                        </span>
+                        <button
+                          aria-label={`${isHidden ? "Show" : "Hide"} ${macroItem.label}`}
+                          className={`rounded-full p-2 disabled:opacity-60 ${
+                            isHidden ? "text-slate-400" : "text-emerald-600"
+                          }`}
+                          disabled={settingsPending}
+                          onClick={() => toggleDraftCoreNutrient(macroItem.key)}
+                          title={isHidden ? "Show" : "Hide"}
+                          type="button"
+                        >
+                          {isHidden ? <EyeOffIcon /> : <EyeIcon />}
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  const name = id.slice("custom:".length);
+                  const nutrient = draftTrackedNutrients.find(
+                    (trackedNutrient) => trackedNutrient.name === name,
+                  );
+
+                  if (!nutrient) {
+                    return null;
+                  }
+
+                  return (
+                    <div
+                      className={`flex items-center justify-between gap-3 px-3 py-2 ${
+                        draggedNutrientId === id ? "bg-emerald-50" : ""
+                      }`}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        if (draggedNutrientId) {
+                          moveDraftNutrientBefore(draggedNutrientId, id);
+                        }
+                        setDraggedNutrientId(null);
+                      }}
+                      key={id}
+                    >
+                      <span
+                        className="cursor-grab text-slate-400 active:cursor-grabbing"
+                        draggable={!settingsPending}
+                        onDragEnd={() => setDraggedNutrientId(null)}
+                        onDragStart={(event) => {
+                          event.dataTransfer.effectAllowed = "move";
+                          event.dataTransfer.setData("text/plain", id);
+                          setDraggedNutrientId(id);
+                        }}
+                      >
+                        <DragHandleIcon />
+                      </span>
+                      <span className="min-w-0 flex-1 text-sm font-medium text-slate-800">
+                        {formatNutrientName(nutrient.name)}
+                      </span>
+                      <button
+                        aria-label={`Delete ${nutrient.name}`}
+                        className="rounded-full p-2 text-red-600 disabled:opacity-60"
+                        disabled={settingsPending}
+                        onClick={() => removeTrackedNutrient(nutrient)}
+                        title="Delete"
+                        type="button"
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-sm leading-6 text-slate-500">
+                Add names only, like calcium or iron. New custom nutrients are
+                estimated for future meals and corrections after you save.
+              </p>
+            </div>
+
+            <form className="mt-3 flex gap-2" onSubmit={addTrackedNutrient}>
+              <input
+                className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                disabled={settingsPending}
+                onChange={(event) => setNewTrackedNutrient(event.target.value)}
+                placeholder="e.g. calcium, iron, vitamin d"
+                value={newTrackedNutrient}
+              />
+              <button
+                className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                disabled={settingsPending}
+                type="submit"
+              >
+                Add
+              </button>
+            </form>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <button
+                className="rounded-full border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-950"
+                disabled={settingsPending}
+                onClick={closeSettings}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                disabled={settingsPending || !settingsChanged}
+                onClick={saveUserSettings}
+                type="button"
+              >
+                {settingsPending ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
