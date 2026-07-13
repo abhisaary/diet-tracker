@@ -336,12 +336,14 @@ export async function updateMeal({
 }
 
 export async function replaceMealNutrition({
+  correctionNote,
   eatenAt,
   id,
   nutrition,
   supabase,
   userId,
 }: {
+  correctionNote?: string;
   eatenAt?: string;
   id: string;
   nutrition: NutritionEstimate;
@@ -351,6 +353,7 @@ export async function replaceMealNutrition({
   const { data, error } = await supabase
     .from("meals")
     .update({
+      correction_note: correctionNote ?? null,
       corrected_nutrition: null,
       ...(eatenAt ? { eaten_at: eatenAt } : {}),
       nutrition,

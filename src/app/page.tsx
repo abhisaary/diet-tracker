@@ -13,14 +13,6 @@ type AppStatus = {
   };
 };
 
-type MealEditDraft = {
-  cleanedDescription: string;
-  eatenAtLocal: string;
-  ingredientEstimatesText: string;
-  mealTitle: string;
-  nutrition: MacroTotals;
-};
-
 function getMealMacros(meal: MealRecord): MacroTotals {
   return meal.correctedNutrition ?? meal.nutrition;
 }
@@ -33,58 +25,8 @@ function getMealTitle(meal: MealRecord) {
   return meal.nutrition.mealTitle || getCleanedDescription(meal) || "Meal";
 }
 
-function getIngredientEstimatesText(meal: MealRecord) {
-  if (meal.nutrition.ingredientEstimates?.length) {
-    return meal.nutrition.ingredientEstimates
-      .map((ingredient) => `${ingredient.name}: ${ingredient.amount}`)
-      .join("\n");
-  }
-
-  return meal.nutrition.notableIngredients.join("\n");
-}
-
-function parseIngredientEstimates(value: string) {
-  return value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [name, ...rest] = line.split(":");
-
-      return {
-        amount: rest.join(":").trim() || "unknown amount",
-        name: name.trim(),
-      };
-    })
-    .filter((ingredient) => ingredient.name);
-}
-
 function padDatePart(value: number) {
   return value.toString().padStart(2, "0");
-}
-
-function toDateTimeLocalValue(value: string) {
-  const date = new Date(value);
-
-  return [
-    date.getFullYear(),
-    padDatePart(date.getMonth() + 1),
-    padDatePart(date.getDate()),
-  ].join("-") + `T${padDatePart(date.getHours())}:${padDatePart(date.getMinutes())}`;
-}
-
-function fromDateTimeLocalValue(value: string) {
-  return new Date(value).toISOString();
-}
-
-function toMealDraft(meal: MealRecord): MealEditDraft {
-  return {
-    cleanedDescription: getCleanedDescription(meal),
-    eatenAtLocal: toDateTimeLocalValue(meal.eatenAt),
-    ingredientEstimatesText: getIngredientEstimatesText(meal),
-    mealTitle: getMealTitle(meal),
-    nutrition: getMealMacros(meal),
-  };
 }
 
 function formatMealTimeOfDay(value: string) {
@@ -95,9 +37,16 @@ function formatMealTimeOfDay(value: string) {
 
 function formatMealDay(value: string) {
   const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
 
-  if (isSameLocalDay(date, new Date())) {
+  if (isSameLocalDay(date, today)) {
     return "Today";
+  }
+
+  if (isSameLocalDay(date, yesterday)) {
+    return "Yesterday";
   }
 
   return new Intl.DateTimeFormat(undefined, {
@@ -251,7 +200,7 @@ export default function Home() {
   const [expandedMealId, setExpandedMealId] = useState<string | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
-  const [mealDrafts, setMealDrafts] = useState<Record<string, MealEditDraft>>({});
+  const [mealCorrections, setMealCorrections] = useState<Record<string, string>>({});
   const [mealPending, setMealPending] = useState(false);
   const [meals, setMeals] = useState<MealRecord[]>([]);
   const [savingMealId, setSavingMealId] = useState<string | null>(null);
@@ -353,61 +302,28 @@ export default function Home() {
 
     const nextMeals = data.meals as MealRecord[];
     setMeals(nextMeals);
-    setMealDrafts(
-      Object.fromEntries(nextMeals.map((meal) => [meal.id, toMealDraft(meal)])),
-    );
   }
 
-  function updateMealDraft(
-    mealId: string,
-    updater: (draft: MealEditDraft) => MealEditDraft,
-  ) {
-    setMealDrafts((current) => {
-      const existing = current[mealId];
-
-      if (!existing) {
-        return current;
-      }
-
-      return { ...current, [mealId]: updater(existing) };
-    });
+  function updateMealCorrection(mealId: string, correction: string) {
+    setMealCorrections((current) => ({ ...current, [mealId]: correction }));
   }
 
-  function mealNeedsReestimate(meal: MealRecord, draft: MealEditDraft) {
-    const currentDraft = toMealDraft(meal);
+  async function saveMealCorrection(mealId: string) {
+    const correction = mealCorrections[mealId]?.trim();
 
-    return (
-      draft.cleanedDescription !== currentDraft.cleanedDescription ||
-      draft.ingredientEstimatesText !== currentDraft.ingredientEstimatesText ||
-      draft.mealTitle !== currentDraft.mealTitle
-    );
-  }
-
-  async function saveMealEdit(mealId: string) {
-    const draft = mealDrafts[mealId];
-    const meal = meals.find((currentMeal) => currentMeal.id === mealId);
-
-    if (!draft || !meal) {
+    if (!correction) {
+      showMessage({ kind: "error", text: "Add a correction before saving." });
       return;
     }
 
-    const ingredientEstimates = parseIngredientEstimates(
-      draft.ingredientEstimatesText,
-    );
-    const regenerateNutrition = mealNeedsReestimate(meal, draft);
     setSavingMealId(mealId);
     setMessage(null);
 
     try {
       const response = await authenticatedFetch("/api/meals", {
         body: JSON.stringify({
-          cleanedDescription: draft.cleanedDescription,
-          eatenAt: fromDateTimeLocalValue(draft.eatenAtLocal),
+          correction,
           id: mealId,
-          ingredientEstimates,
-          mealTitle: draft.mealTitle,
-          nutrition: draft.nutrition,
-          regenerateNutrition,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
         headers: {
@@ -423,12 +339,8 @@ export default function Home() {
 
       await loadMeals();
       setEditingMealId(null);
-      showMessage({
-        kind: "success",
-        text: regenerateNutrition
-          ? "Meal updated and macros re-estimated."
-          : "Meal updated.",
-      });
+      updateMealCorrection(mealId, "");
+      showMessage({ kind: "success", text: "Correction applied." });
     } catch (error) {
       showMessage({
         kind: "error",
@@ -609,6 +521,7 @@ export default function Home() {
 
   const todayMeals = meals.filter(isMealToday);
   const todayMacros = getMealMacroTotals(todayMeals);
+  const todayDayKey = getLocalDayKey(new Date().toISOString());
   const mealsByDay = meals.reduce<
     { dayKey: string; dayLabel: string; meals: MealRecord[] }[]
   >((groups, meal) => {
@@ -628,6 +541,9 @@ export default function Home() {
 
     return groups;
   }, []);
+  const historyMealsByDay = mealsByDay.filter(
+    (group) => group.dayKey !== todayDayKey,
+  );
 
   function renderMacroGrid(macros: MacroTotals, className = "") {
     return (
@@ -645,7 +561,6 @@ export default function Home() {
   }
 
   function renderMealCard(meal: MealRecord) {
-    const draft = mealDrafts[meal.id] ?? toMealDraft(meal);
     const macros = getMealMacros(meal);
     const ingredients =
       meal.nutrition.ingredientEstimates?.length
@@ -787,101 +702,28 @@ export default function Home() {
             ) : (
               <>
                 <label className="block text-sm font-medium text-slate-700">
-                  Meal title
-                  <input
-                    className="mt-2 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
-                    onChange={(event) =>
-                      updateMealDraft(meal.id, (current) => ({
-                        ...current,
-                        mealTitle: event.target.value,
-                      }))
-                    }
-                    value={draft.mealTitle}
-                  />
-                </label>
-
-                <label className="mt-3 block text-sm font-medium text-slate-700">
-                  Meal time
-                  <input
-                    className="mt-2 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
-                    onChange={(event) =>
-                      updateMealDraft(meal.id, (current) => ({
-                        ...current,
-                        eatenAtLocal: event.target.value,
-                      }))
-                    }
-                    type="datetime-local"
-                    value={draft.eatenAtLocal}
-                  />
-                </label>
-
-                <label className="mt-3 block text-sm font-medium text-slate-700">
-                  Meal description
-                  <textarea
-                    className="mt-2 min-h-20 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
-                    onChange={(event) =>
-                      updateMealDraft(meal.id, (current) => ({
-                        ...current,
-                        cleanedDescription: event.target.value,
-                      }))
-                    }
-                    value={draft.cleanedDescription}
-                  />
-                </label>
-
-                <label className="mt-3 block text-sm font-medium text-slate-700">
-                  Ingredients and amounts
+                  Correction
                   <textarea
                     className="mt-2 min-h-24 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
                     onChange={(event) =>
-                      updateMealDraft(meal.id, (current) => ({
-                        ...current,
-                        ingredientEstimatesText: event.target.value,
-                      }))
+                      updateMealCorrection(meal.id, event.target.value)
                     }
-                    placeholder="One per line, like: tofu: 4 oz"
-                    value={draft.ingredientEstimatesText}
+                    placeholder="e.g. actually it had full-fat yogurt, or closer to 5 tbsp peanut butter"
+                    value={mealCorrections[meal.id] ?? ""}
                   />
                 </label>
-
-                <div className="mt-3 grid grid-cols-2 gap-3">
-                  {(
-                    [
-                      ["calories", "Calories"],
-                      ["proteinGrams", "Protein g"],
-                      ["carbsGrams", "Carbs g"],
-                      ["fatGrams", "Fat g"],
-                      ["fiberGrams", "Fiber g"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <label
-                      className="text-sm font-medium text-slate-700"
-                      key={key}
-                    >
-                      {label}
-                      <input
-                        className="mt-2 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
-                        min={0}
-                        onChange={(event) =>
-                          updateMealDraft(meal.id, (current) => ({
-                            ...current,
-                            nutrition: {
-                              ...current.nutrition,
-                              [key]: Number(event.target.value),
-                            },
-                          }))
-                        }
-                        type="number"
-                        value={draft.nutrition[key]}
-                      />
-                    </label>
-                  ))}
-                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  The model will apply this note to the existing meal, recompute
+                  ingredients and macros, and keep the result structured.
+                </p>
 
                 <div className="mt-3 grid grid-cols-2 gap-3">
                   <button
                     className="rounded-full border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-950"
-                    onClick={() => setEditingMealId(null)}
+                    onClick={() => {
+                      setEditingMealId(null);
+                      updateMealCorrection(meal.id, "");
+                    }}
                     type="button"
                   >
                     Cancel
@@ -889,10 +731,10 @@ export default function Home() {
                   <button
                     className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
                     disabled={savingMealId === meal.id}
-                    onClick={() => saveMealEdit(meal.id)}
+                    onClick={() => saveMealCorrection(meal.id)}
                     type="button"
                   >
-                    {savingMealId === meal.id ? "Saving..." : "Save"}
+                    {savingMealId === meal.id ? "Applying..." : "Apply"}
                   </button>
                 </div>
               </>
@@ -1081,27 +923,23 @@ export default function Home() {
                   {todayMeals.map(renderMealCard)}
                 </div>
               )}
-            </section>
 
-            <button
-              className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-950 shadow-sm"
-              onClick={() => setShowFullLog((value) => !value)}
-              type="button"
-            >
-              {showFullLog ? "Hide full log" : "View full log"}
-            </button>
+              <button
+                className="mt-4 w-full rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-950 shadow-sm"
+                onClick={() => setShowFullLog((value) => !value)}
+                type="button"
+              >
+                {showFullLog ? "Hide history" : "View history"}
+              </button>
 
-            {showFullLog ? (
-              <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h2 className="text-lg font-semibold">Full Log</h2>
-
-                {meals.length === 0 ? (
+              {showFullLog ? (
+                historyMealsByDay.length === 0 ? (
                   <p className="mt-3 text-sm text-slate-500">
-                    Saved meals will show up here.
+                    Previous meals will show up here.
                   </p>
                 ) : (
                   <div className="mt-4 flex flex-col gap-5">
-                    {mealsByDay.map((group) => (
+                    {historyMealsByDay.map((group) => (
                       <div className="flex flex-col gap-3" key={group.dayKey}>
                         <h3 className="px-1 text-sm font-semibold text-slate-500">
                           {group.dayLabel}
@@ -1110,9 +948,9 @@ export default function Home() {
                       </div>
                     ))}
                   </div>
-                )}
-              </section>
-            ) : null}
+                )
+              ) : null}
+            </section>
           </>
         )}
       </div>

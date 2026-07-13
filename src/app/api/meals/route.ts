@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { estimateMealNutrition } from "@/lib/openai-estimator";
 import type { MealRecord } from "@/lib/schemas";
-import { macroSchema, mealInputSchema } from "@/lib/schemas";
+import { mealInputSchema } from "@/lib/schemas";
 import {
   deleteMeal,
   downloadMealPhoto,
@@ -11,7 +11,6 @@ import {
   insertMeal,
   listMeals,
   replaceMealNutrition,
-  updateMeal,
   uploadMealPhoto,
 } from "@/lib/supabase-server";
 import { z } from "zod";
@@ -56,29 +55,6 @@ function needsCardBackfill(meal: Awaited<ReturnType<typeof listMeals>>[number]) 
   return !meal.nutrition.mealTitle || !meal.nutrition.ingredientEstimates?.length;
 }
 
-function getEditedMealDescription({
-  cleanedDescription,
-  ingredientEstimates,
-  mealTitle,
-}: {
-  cleanedDescription: string;
-  ingredientEstimates: { amount: string; name: string }[];
-  mealTitle: string;
-}) {
-  const ingredients = ingredientEstimates
-    .map((ingredient) => `${ingredient.name}: ${ingredient.amount}`)
-    .join("\n");
-
-  return [
-    "The user corrected an existing meal entry. Re-estimate the full nutrition from the corrected card data below.",
-    `Meal title: ${mealTitle}`,
-    `Description: ${cleanedDescription}`,
-    ingredients ? `Ingredients:\n${ingredients}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
-}
-
 function formatRecentMealContext(meals: MealRecord[]) {
   return meals
     .slice(0, 12)
@@ -101,19 +77,49 @@ function formatRecentMealContext(meals: MealRecord[]) {
     .join("\n");
 }
 
+function formatMealForCorrection(meal: MealRecord, correction: string) {
+  const nutrition = meal.correctedNutrition ?? meal.nutrition;
+  const ingredients =
+    meal.nutrition.ingredientEstimates
+      ?.map((ingredient) => `${ingredient.name}: ${ingredient.amount}`)
+      .join("\n") || meal.nutrition.notableIngredients.join("\n");
+  const macroBreakdown =
+    meal.nutrition.macroBreakdown
+      ?.map(
+        (ingredient) =>
+          `${ingredient.name}: ${ingredient.amount}, ${Math.round(ingredient.calories)} cal, ${Math.round(ingredient.proteinGrams)}g protein, ${Math.round(ingredient.carbsGrams)}g carbs, ${Math.round(ingredient.fatGrams)}g fat, ${Math.round(ingredient.fiberGrams)}g fiber`,
+      )
+      .join("\n") || "";
+
+  return [
+    "The user is correcting an existing meal entry. Apply the correction to the current structured meal data and return a complete updated estimate.",
+    "Keep facts from the current meal unless the correction changes them. Recompute ingredients, per-ingredient macro breakdown, and total macros from the corrected facts.",
+    "If the correction changes when the meal was eaten, return inferredMealTime for the corrected time; otherwise keep inferredMealTime null.",
+    "",
+    `User correction: ${correction}`,
+    "",
+    `Current title: ${meal.nutrition.mealTitle || meal.description || "Meal"}`,
+    `Current eatenAt: ${meal.eatenAt}`,
+    `Current original description: ${meal.description}`,
+    `Current cleaned description: ${meal.nutrition.cleanedDescription || meal.description}`,
+    ingredients ? `Current ingredients:\n${ingredients}` : "",
+    `Current totals: ${Math.round(nutrition.calories)} cal, ${Math.round(nutrition.proteinGrams)}g protein, ${Math.round(nutrition.carbsGrams)}g carbs, ${Math.round(nutrition.fatGrams)}g fat, ${Math.round(nutrition.fiberGrams)}g fiber`,
+    macroBreakdown ? `Current macro breakdown:\n${macroBreakdown}` : "",
+    meal.correctionNote ? `Previous correction note: ${meal.correctionNote}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function getNextCorrectionNote(existingNote: string | undefined, correction: string) {
+  const nextLine = `${new Date().toISOString()}: ${correction}`;
+
+  return existingNote ? `${existingNote}\n${nextLine}` : nextLine;
+}
+
 const mealUpdateSchema = z.object({
-  cleanedDescription: z.string().trim().min(1),
-  eatenAt: z.string().datetime().optional(),
+  correction: z.string().trim().min(1, "Add a correction before saving."),
   id: z.string().uuid(),
-  ingredientEstimates: z.array(
-    z.object({
-      amount: z.string(),
-      name: z.string(),
-    }),
-  ),
-  mealTitle: z.string().trim().min(1),
-  nutrition: macroSchema,
-  regenerateNutrition: z.boolean().default(false),
   timezone: z.string().optional(),
 });
 
@@ -254,45 +260,26 @@ export async function PATCH(request: Request) {
     return jsonError(input.error.issues[0]?.message ?? "Invalid meal update.");
   }
 
-  if (input.data.regenerateNutrition) {
-    const existingMeal = await getMeal(auth.supabase, auth.user.id, input.data.id);
-    const imageBytes = existingMeal.photoFileId
-      ? await downloadMealPhoto(auth.supabase, existingMeal.photoFileId)
-      : undefined;
-    const nutrition = await estimateMealNutrition({
-      description: getEditedMealDescription({
-        cleanedDescription: input.data.cleanedDescription,
-        ingredientEstimates: input.data.ingredientEstimates,
-        mealTitle: input.data.mealTitle,
-      }),
-      imageBytes,
-      mimeType: imageBytes ? getMimeType(existingMeal.photoFileName) : undefined,
-      restaurantLink: existingMeal.restaurantLink,
-      submittedAt: existingMeal.createdAt,
-      timezone: input.data.timezone,
-    });
-    const meal = await replaceMealNutrition({
-      eatenAt: input.data.eatenAt,
-      id: input.data.id,
-      nutrition: {
-        ...nutrition,
-        inferredMealTime: input.data.eatenAt ?? nutrition.inferredMealTime,
-        mealTitle: input.data.mealTitle || nutrition.mealTitle,
-      },
-      supabase: auth.supabase,
-      userId: auth.user.id,
-    });
-
-    return NextResponse.json({ meal });
-  }
-
-  const meal = await updateMeal({
-    cleanedDescription: input.data.cleanedDescription,
-    correctedNutrition: input.data.nutrition,
-    eatenAt: input.data.eatenAt,
+  const existingMeal = await getMeal(auth.supabase, auth.user.id, input.data.id);
+  const imageBytes = existingMeal.photoFileId
+    ? await downloadMealPhoto(auth.supabase, existingMeal.photoFileId)
+    : undefined;
+  const nutrition = await estimateMealNutrition({
+    description: formatMealForCorrection(existingMeal, input.data.correction),
+    imageBytes,
+    mimeType: imageBytes ? getMimeType(existingMeal.photoFileName) : undefined,
+    restaurantLink: existingMeal.restaurantLink,
+    submittedAt: existingMeal.createdAt,
+    timezone: input.data.timezone,
+  });
+  const meal = await replaceMealNutrition({
+    correctionNote: getNextCorrectionNote(
+      existingMeal.correctionNote,
+      input.data.correction,
+    ),
+    eatenAt: nutrition.inferredMealTime ?? undefined,
     id: input.data.id,
-    ingredientEstimates: input.data.ingredientEstimates,
-    mealTitle: input.data.mealTitle,
+    nutrition,
     supabase: auth.supabase,
     userId: auth.user.id,
   });
