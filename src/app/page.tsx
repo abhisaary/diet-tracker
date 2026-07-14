@@ -18,6 +18,16 @@ type CustomNutrientItem = TrackedNutrient & {
   amount: number;
   estimatedMeals: number;
 };
+type MacroCalorieKey = "carbsGrams" | "fatGrams" | "proteinGrams";
+type ActivityLevel = "general" | "very_active";
+type SexForEstimate = "female" | "male";
+type UserProfile = {
+  activityLevel: ActivityLevel;
+  ageYears?: number;
+  heightInches?: number;
+  sex?: SexForEstimate;
+  weightPounds?: number;
+};
 
 const coreMacroItems: {
   format: (macros: MacroTotals) => string;
@@ -50,6 +60,64 @@ const coreMacroItems: {
     label: "fiber",
   },
 ];
+
+const macroCalorieReferences: {
+  key: MacroCalorieKey;
+  maxPercent: number;
+  minPercent: number;
+  strokeColor: string;
+}[] = [
+  {
+    key: "carbsGrams",
+    maxPercent: 65,
+    minPercent: 45,
+    strokeColor: "#38bdf8",
+  },
+  {
+    key: "fatGrams",
+    maxPercent: 35,
+    minPercent: 20,
+    strokeColor: "#fbbf24",
+  },
+  {
+    key: "proteinGrams",
+    maxPercent: 35,
+    minPercent: 10,
+    strokeColor: "#34d399",
+  },
+];
+
+const fiberChartReference = {
+  label: "Fiber",
+  maxGrams: 38,
+  minGrams: 25,
+  strokeColor: "#8b5cf6",
+};
+
+const defaultUserProfile: UserProfile = {
+  activityLevel: "general",
+};
+
+const proteinReferences: Record<
+  ActivityLevel,
+  { label: string; maxGramsPerKg: number; minGramsPerKg: number }
+> = {
+  general: {
+    label: "General",
+    maxGramsPerKg: 1.2,
+    minGramsPerKg: 0.8,
+  },
+  very_active: {
+    label: "Very active",
+    maxGramsPerKg: 2.2,
+    minGramsPerKg: 1.6,
+  },
+};
+
+const calorieActivityFactors: Record<ActivityLevel, number> = {
+  general: 1.4,
+  very_active: 1.725,
+};
 
 function getMealMacros(meal: MealRecord): MacroTotals {
   return meal.correctedNutrition ?? meal.nutrition;
@@ -114,6 +182,13 @@ function isMealToday(meal: MealRecord) {
   return isSameLocalDay(new Date(meal.eatenAt), new Date());
 }
 
+function addLocalDays(date: Date, days: number) {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+
+  return nextDate;
+}
+
 function getMealMacroTotals(meals: MealRecord[]): MacroTotals {
   return meals.reduce(
     (totals, meal) => {
@@ -135,6 +210,153 @@ function getMealMacroTotals(meals: MealRecord[]): MacroTotals {
       proteinGrams: 0,
     },
   );
+}
+
+function divideMacroTotals(macros: MacroTotals, divisor: number): MacroTotals {
+  if (divisor <= 0) {
+    return {
+      calories: 0,
+      carbsGrams: 0,
+      fatGrams: 0,
+      fiberGrams: 0,
+      proteinGrams: 0,
+    };
+  }
+
+  return {
+    calories: macros.calories / divisor,
+    carbsGrams: macros.carbsGrams / divisor,
+    fatGrams: macros.fatGrams / divisor,
+    fiberGrams: macros.fiberGrams / divisor,
+    proteinGrams: macros.proteinGrams / divisor,
+  };
+}
+
+function getMacroCalories(macros: MacroTotals, key: MacroCalorieKey) {
+  return key === "fatGrams" ? macros[key] * 9 : macros[key] * 4;
+}
+
+function getMacroCaloriePercent(macros: MacroTotals, key: MacroCalorieKey) {
+  if (macros.calories <= 0) {
+    return null;
+  }
+
+  return Math.round((getMacroCalories(macros, key) / macros.calories) * 100);
+}
+
+function getRangeStatus(value: number | null, min: number, max: number) {
+  if (value === null) {
+    return "unknown";
+  }
+
+  return value >= min && value <= max ? "in-range" : "out-of-range";
+}
+
+function getRangeTextClass(status: "in-range" | "out-of-range" | "unknown") {
+  if (status === "in-range") {
+    return "font-semibold text-emerald-700";
+  }
+
+  if (status === "out-of-range") {
+    return "font-semibold text-red-700";
+  }
+
+  return "text-slate-500";
+}
+
+function getOptionalPositiveNumber(value: unknown) {
+  const numberValue =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : NaN;
+
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : undefined;
+}
+
+function getHeightInchesFromParts(feet: number | undefined, inches: number | undefined) {
+  return feet || inches ? (feet ?? 0) * 12 + (inches ?? 0) : undefined;
+}
+
+function isActivityLevel(value: unknown): value is ActivityLevel {
+  return value === "general" || value === "very_active";
+}
+
+function isSexForEstimate(value: unknown): value is SexForEstimate {
+  return value === "female" || value === "male";
+}
+
+function parseUserProfile(value: unknown): UserProfile {
+  if (!value || typeof value !== "object") {
+    return defaultUserProfile;
+  }
+
+  return {
+    activityLevel:
+      "activityLevel" in value && isActivityLevel(value.activityLevel)
+        ? value.activityLevel
+        : defaultUserProfile.activityLevel,
+    ageYears:
+      "ageYears" in value ? getOptionalPositiveNumber(value.ageYears) : undefined,
+    heightInches:
+      "heightInches" in value
+        ? getOptionalPositiveNumber(value.heightInches)
+        : undefined,
+    sex:
+      "sex" in value && isSexForEstimate(value.sex) ? value.sex : undefined,
+    weightPounds:
+      "weightPounds" in value
+        ? getOptionalPositiveNumber(value.weightPounds)
+        : undefined,
+  };
+}
+
+function getWeightKg(profile: UserProfile) {
+  return profile.weightPounds ? profile.weightPounds / 2.20462 : null;
+}
+
+function getProteinGramsPerKg(macros: MacroTotals, profile: UserProfile) {
+  const weightKg = getWeightKg(profile);
+
+  return weightKg ? macros.proteinGrams / weightKg : null;
+}
+
+function formatGramsPerKg(value: number | null) {
+  return value === null ? "--" : `${(Math.round(value * 10) / 10).toFixed(1)}g/kg`;
+}
+
+function getEstimatedMaintenanceCalories(profile: UserProfile) {
+  if (
+    !profile.ageYears ||
+    !profile.heightInches ||
+    !profile.sex ||
+    !profile.weightPounds
+  ) {
+    return null;
+  }
+
+  const weightKg = profile.weightPounds / 2.20462;
+  const heightCm = profile.heightInches * 2.54;
+  const sexAdjustment = profile.sex === "male" ? 5 : -161;
+  const bmr =
+    10 * weightKg + 6.25 * heightCm - 5 * profile.ageYears + sexAdjustment;
+
+  return Math.round(bmr * calorieActivityFactors[profile.activityLevel]);
+}
+
+function getCalorieReferenceRange(profile: UserProfile) {
+  const maintenanceCalories = getEstimatedMaintenanceCalories(profile);
+
+  if (!maintenanceCalories) {
+    return null;
+  }
+
+  return {
+    max: Math.round(maintenanceCalories * 1.15),
+    min: Math.round(maintenanceCalories * 0.85),
+    target: maintenanceCalories,
+  };
 }
 
 function isCoreMacroKey(value: unknown): value is CoreMacroKey {
@@ -200,6 +422,16 @@ function areTrackedNutrientsEqual(
       (item, index) =>
         item.name === second[index]?.name && item.unit === second[index]?.unit,
     )
+  );
+}
+
+function areProfilesEqual(first: UserProfile, second: UserProfile) {
+  return (
+    first.activityLevel === second.activityLevel &&
+    first.ageYears === second.ageYears &&
+    first.heightInches === second.heightInches &&
+    first.sex === second.sex &&
+    first.weightPounds === second.weightPounds
   );
 }
 
@@ -445,6 +677,27 @@ function CautionIcon() {
   );
 }
 
+function ChartIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M4 19V5" />
+      <path d="M4 19h16" />
+      <path d="M8 16v-5" />
+      <path d="M12 16V8" />
+      <path d="M16 16v-3" />
+    </svg>
+  );
+}
+
 function EyeIcon() {
   return (
     <svg
@@ -534,8 +787,10 @@ export default function Home() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [activeForm, setActiveForm] = useState<"meal" | "symptom" | null>(null);
+  const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [authPending, setAuthPending] = useState(false);
   const [deletingMealId, setDeletingMealId] = useState<string | null>(null);
+  const [draftProfile, setDraftProfile] = useState<UserProfile>(defaultUserProfile);
   const [draftHiddenCoreNutrients, setDraftHiddenCoreNutrients] = useState<
     CoreMacroKey[]
   >([]);
@@ -556,6 +811,8 @@ export default function Home() {
   const [meals, setMeals] = useState<MealRecord[]>([]);
   const [newTrackedNutrient, setNewTrackedNutrient] = useState("");
   const [nutrientOrder, setNutrientOrder] = useState<string[]>([]);
+  const [profile, setProfile] = useState<UserProfile>(defaultUserProfile);
+  const [profilePending, setProfilePending] = useState(false);
   const [savingMealId, setSavingMealId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPending, setSettingsPending] = useState(false);
@@ -587,10 +844,13 @@ export default function Home() {
       parseNutrientOrder(metadata?.nutrientOrder),
       nextTrackedNutrients,
     );
+    const nextProfile = parseUserProfile(metadata?.userProfile);
 
     setTrackedNutrients(nextTrackedNutrients);
     setHiddenCoreNutrients(nextHiddenCoreNutrients);
     setNutrientOrder(nextNutrientOrder);
+    setProfile(nextProfile);
+    setDraftProfile(nextProfile);
     setDraftTrackedNutrients(nextTrackedNutrients);
     setDraftHiddenCoreNutrients(nextHiddenCoreNutrients);
     setDraftNutrientOrder(nextNutrientOrder);
@@ -630,7 +890,10 @@ export default function Home() {
         setHiddenCoreNutrients([]);
         setMeals([]);
         setNutrientOrder([]);
+        setProfile(defaultUserProfile);
+        setDraftProfile(defaultUserProfile);
         setAccountMenuOpen(false);
+        setAnalyticsOpen(false);
         setSettingsOpen(false);
         setTrackedNutrients([]);
       }
@@ -671,11 +934,18 @@ export default function Home() {
 
   function openSettings() {
     setAccountMenuOpen(false);
+    setAnalyticsOpen(false);
     setDraftHiddenCoreNutrients(hiddenCoreNutrients);
     setDraftNutrientOrder(nutrientOrder);
     setDraftTrackedNutrients(trackedNutrients);
     setNewTrackedNutrient("");
     setSettingsOpen(true);
+  }
+
+  function openAnalytics() {
+    setAccountMenuOpen(false);
+    setSettingsOpen(false);
+    setAnalyticsOpen(true);
   }
 
   async function authenticatedFetch(input: RequestInfo, init: RequestInit = {}) {
@@ -719,6 +989,45 @@ export default function Home() {
       });
     } finally {
       setSettingsPending(false);
+    }
+  }
+
+  function updateDraftProfile(updates: Partial<UserProfile>) {
+    setDraftProfile((current) => ({ ...current, ...updates }));
+  }
+
+  async function saveUserProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setProfilePending(true);
+    setMessage(null);
+
+    try {
+      const nextProfile: UserProfile = {
+        activityLevel: draftProfile.activityLevel,
+        ageYears: draftProfile.ageYears,
+        heightInches: draftProfile.heightInches,
+        sex: draftProfile.sex,
+        weightPounds: draftProfile.weightPounds,
+      };
+      const { data, error } = await supabase.auth.updateUser({
+        data: { userProfile: nextProfile },
+      });
+
+      if (error) {
+        throw error;
+      }
+
+      const savedProfile = parseUserProfile(data.user.user_metadata?.userProfile);
+      setProfile(savedProfile);
+      setDraftProfile(savedProfile);
+    } catch (error) {
+      showMessage({
+        kind: "error",
+        text:
+          error instanceof Error ? error.message : "Could not update profile.",
+      });
+    } finally {
+      setProfilePending(false);
     }
   }
 
@@ -1033,6 +1342,11 @@ export default function Home() {
     trackedNutrients,
   );
   const todayDayKey = getLocalDayKey(new Date().toISOString());
+  const currentDay = new Date();
+  const thirtyDayStartKey = getLocalDayKey(addLocalDays(currentDay, -29).toISOString());
+  const sevenDayKeys = Array.from({ length: 7 }, (_, index) =>
+    getLocalDayKey(addLocalDays(currentDay, index - 6).toISOString()),
+  );
   const savedNutrientOrder = reconcileNutrientOrder(
     nutrientOrder,
     trackedNutrients,
@@ -1045,6 +1359,7 @@ export default function Home() {
     !areStringArraysEqual(hiddenCoreNutrients, draftHiddenCoreNutrients) ||
     !areStringArraysEqual(savedNutrientOrder, draftSavedNutrientOrder) ||
     !areTrackedNutrientsEqual(trackedNutrients, draftTrackedNutrients);
+  const profileChanged = !areProfilesEqual(profile, draftProfile);
   const mealsByDay = meals.reduce<
     { dayKey: string; dayLabel: string; meals: MealRecord[] }[]
   >((groups, meal) => {
@@ -1067,6 +1382,53 @@ export default function Home() {
   const historyMealsByDay = mealsByDay.filter(
     (group) => group.dayKey !== todayDayKey,
   );
+  const mealsByDayKey = mealsByDay.reduce<Record<string, MealRecord[]>>(
+    (groups, group) => ({
+      ...groups,
+      [group.dayKey]: group.meals,
+    }),
+    {},
+  );
+  const thirtyDayMealsByDay = mealsByDay.filter(
+    (group) => group.dayKey >= thirtyDayStartKey && group.meals.length > 0,
+  );
+  const thirtyDayMealCount = thirtyDayMealsByDay.reduce(
+    (count, group) => count + group.meals.length,
+    0,
+  );
+  const thirtyDayLoggedDays = thirtyDayMealsByDay.length;
+  const thirtyDayAverageMacros = divideMacroTotals(
+    getMealMacroTotals(thirtyDayMealsByDay.flatMap((group) => group.meals)),
+    thirtyDayLoggedDays,
+  );
+  const thirtyDayAverageCustomNutrients = getCustomNutrientItems(
+    thirtyDayMealsByDay.flatMap((group) => group.meals),
+    trackedNutrients,
+  ).map((nutrient) => ({
+    ...nutrient,
+    amount:
+      thirtyDayLoggedDays > 0 ? nutrient.amount / thirtyDayLoggedDays : 0,
+  }));
+  const sevenDayMacroRows = sevenDayKeys.map((dayKey) => {
+    const dayMeals = mealsByDayKey[dayKey] ?? [];
+    const macros = getMealMacroTotals(dayMeals);
+
+    return {
+      dayKey,
+      macros,
+      mealCount: dayMeals.length,
+      percents: macroCalorieReferences.map((reference) => ({
+        ...reference,
+        percent: getMacroCaloriePercent(macros, reference.key),
+      })),
+    };
+  });
+  const draftHeightFeet = draftProfile.heightInches
+    ? Math.floor(draftProfile.heightInches / 12)
+    : "";
+  const draftHeightInchesRemainder = draftProfile.heightInches
+    ? Math.round((draftProfile.heightInches % 12) * 10) / 10
+    : "";
 
   function renderNutrientGrid({
     customNutrients,
@@ -1101,6 +1463,118 @@ export default function Home() {
           </div>
         ))}
       </div>
+    );
+  }
+
+  function renderMiniTrendChart({
+    points,
+    referenceMax,
+    referenceMin,
+    strokeColor,
+  }: {
+    points: { dayKey: string; value: number | null }[];
+    referenceMax?: number;
+    referenceMin?: number;
+    strokeColor: string;
+  }) {
+    const values = points
+      .map((point) => point.value)
+      .filter((value): value is number => value !== null);
+
+    if (values.length === 0) {
+      return (
+        <p className="mt-1 text-[10px] leading-4 text-slate-400">
+          No 7-day data
+        </p>
+      );
+    }
+
+    const bounds = {
+      bottom: 48,
+      height: 34,
+      left: 0,
+      right: 220,
+      top: 14,
+      width: 220,
+    };
+    const maxValue = Math.max(...values, referenceMax ?? 0, 1);
+    const yMax = Math.max(1, maxValue * 1.18);
+    const xStep = bounds.width / Math.max(points.length - 1, 1);
+    const yForValue = (value: number) =>
+      bounds.bottom - Math.min(Math.max(value, 0), yMax) * (bounds.height / yMax);
+    const chartPoints = points.flatMap((point, index) =>
+      point.value === null
+        ? []
+        : [
+            {
+              ...point,
+              x: bounds.left + index * xStep,
+              y: yForValue(point.value),
+            },
+          ],
+    );
+    const referenceTop =
+      referenceMax === undefined ? null : yForValue(referenceMax);
+    const referenceBottom =
+      referenceMin === undefined ? null : yForValue(referenceMin);
+
+    return (
+      <svg
+        aria-label="Last 7 days trend"
+        className="mt-1 h-auto w-full overflow-visible"
+        role="img"
+        viewBox="0 0 220 56"
+      >
+        <line
+          className="stroke-slate-200"
+          vectorEffect="non-scaling-stroke"
+          x1={bounds.left}
+          x2={bounds.left}
+          y1={bounds.top}
+          y2={bounds.bottom}
+        />
+        <line
+          className="stroke-slate-200"
+          vectorEffect="non-scaling-stroke"
+          x1={bounds.left}
+          x2={bounds.right}
+          y1={bounds.bottom}
+          y2={bounds.bottom}
+        />
+        {referenceTop !== null && referenceBottom !== null ? (
+          <rect
+            fill={strokeColor}
+            fillOpacity="0.14"
+            height={referenceBottom - referenceTop}
+            width={bounds.width}
+            x={bounds.left}
+            y={referenceTop}
+          />
+        ) : null}
+        {chartPoints.length > 1 ? (
+          <polyline
+            fill="none"
+            points={chartPoints.map((point) => `${point.x},${point.y}`).join(" ")}
+            stroke={strokeColor}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2"
+            vectorEffect="non-scaling-stroke"
+          />
+        ) : null}
+        {chartPoints.map((point) => (
+          <circle
+            cx={point.x}
+            cy={point.y}
+            fill={strokeColor}
+            key={point.dayKey}
+            r="2.75"
+            stroke="white"
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+      </svg>
     );
   }
 
@@ -1345,6 +1819,19 @@ export default function Home() {
           {accessToken ? (
             <div className="flex shrink-0 items-center gap-2">
               <button
+                aria-label="Open nutrition trends"
+                className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm ${
+                  analyticsOpen ? "ring-4 ring-sky-100" : ""
+                }`}
+                onClick={() =>
+                  analyticsOpen ? setAnalyticsOpen(false) : openAnalytics()
+                }
+                title="Trends"
+                type="button"
+              >
+                <ChartIcon />
+              </button>
+              <button
                 aria-label="Open settings"
                 className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm ${
                   settingsOpen ? "ring-4 ring-emerald-100" : ""
@@ -1367,23 +1854,184 @@ export default function Home() {
                   {(userEmail?.[0] ?? "U").toUpperCase()}
                 </button>
                 {accountMenuOpen ? (
-                  <div className="absolute right-0 top-12 z-20 w-44 rounded-2xl border border-slate-200 bg-white p-2 text-sm shadow-lg">
-                    {userEmail ? (
-                      <p className="truncate px-3 py-2 text-xs text-slate-500">
-                        {userEmail}
-                      </p>
-                    ) : null}
+                  <>
                     <button
-                      className="w-full rounded-xl px-3 py-2 text-left font-semibold text-red-600 hover:bg-red-50"
-                      onClick={() => {
-                        setAccountMenuOpen(false);
-                        supabase.auth.signOut();
-                      }}
+                      aria-label="Close account menu"
+                      className="fixed inset-0 z-10 cursor-default"
+                      onClick={() => setAccountMenuOpen(false)}
                       type="button"
-                    >
-                      Log out
-                    </button>
-                  </div>
+                    />
+                    <div className="absolute right-0 top-12 z-20 w-72 rounded-2xl border border-slate-200 bg-white p-3 text-sm shadow-lg">
+                      <div className="flex items-center justify-between gap-3">
+                        {userEmail ? (
+                          <p className="min-w-0 truncate py-1 text-xs text-slate-500">
+                            {userEmail}
+                          </p>
+                        ) : null}
+                        <button
+                          className="shrink-0 rounded-full px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50"
+                          onClick={() => {
+                            setAccountMenuOpen(false);
+                            supabase.auth.signOut();
+                          }}
+                          type="button"
+                        >
+                          Log out
+                        </button>
+                      </div>
+                      <form
+                        className="mt-3 border-t border-slate-100 pt-3"
+                        onSubmit={saveUserProfile}
+                      >
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Profile
+                        </p>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <fieldset className="text-xs font-medium text-slate-600">
+                            <legend>Height</legend>
+                            <div className="mt-1 grid grid-cols-2 gap-1">
+                              <input
+                                aria-label="Height feet"
+                                className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                                inputMode="numeric"
+                                min="0"
+                                onChange={(event) => {
+                                  const feet = getOptionalPositiveNumber(
+                                    event.target.value,
+                                  );
+                                  const inches =
+                                    typeof draftHeightInchesRemainder === "number"
+                                      ? draftHeightInchesRemainder
+                                      : 0;
+
+                                  updateDraftProfile({
+                                    heightInches: getHeightInchesFromParts(
+                                      feet,
+                                      inches,
+                                    ),
+                                  });
+                                }}
+                                placeholder="ft"
+                                step="1"
+                                type="number"
+                                value={draftHeightFeet}
+                              />
+                              <input
+                                aria-label="Height inches"
+                                className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                                inputMode="decimal"
+                                min="0"
+                                onChange={(event) => {
+                                  const feet =
+                                    typeof draftHeightFeet === "number"
+                                      ? draftHeightFeet
+                                      : 0;
+                                  const inches = getOptionalPositiveNumber(
+                                    event.target.value,
+                                  );
+
+                                  updateDraftProfile({
+                                    heightInches: getHeightInchesFromParts(
+                                      feet,
+                                      inches,
+                                    ),
+                                  });
+                                }}
+                                placeholder="in"
+                                step="0.5"
+                                type="number"
+                                value={draftHeightInchesRemainder}
+                              />
+                            </div>
+                          </fieldset>
+                          <label className="text-xs font-medium text-slate-600">
+                            Weight
+                            <input
+                              className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                              inputMode="decimal"
+                              min="1"
+                              onChange={(event) =>
+                                updateDraftProfile({
+                                  weightPounds: getOptionalPositiveNumber(
+                                    event.target.value,
+                                  ),
+                                })
+                              }
+                              placeholder="lb"
+                              step="0.1"
+                              type="number"
+                              value={draftProfile.weightPounds ?? ""}
+                            />
+                          </label>
+                        </div>
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <label className="text-xs font-medium text-slate-600">
+                            Age
+                            <input
+                              className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                              inputMode="numeric"
+                              min="1"
+                              onChange={(event) =>
+                                updateDraftProfile({
+                                  ageYears: getOptionalPositiveNumber(
+                                    event.target.value,
+                                  ),
+                                })
+                              }
+                              placeholder="years"
+                              step="1"
+                              type="number"
+                              value={draftProfile.ageYears ?? ""}
+                            />
+                          </label>
+                          <label className="text-xs font-medium text-slate-600">
+                            Sex
+                            <select
+                              className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                              onChange={(event) =>
+                                updateDraftProfile({
+                                  sex: event.target.value
+                                    ? (event.target.value as SexForEstimate)
+                                    : undefined,
+                                })
+                              }
+                              value={draftProfile.sex ?? ""}
+                            >
+                              <option value="">Not set</option>
+                              <option value="female">Female</option>
+                              <option value="male">Male</option>
+                            </select>
+                          </label>
+                        </div>
+                        <label className="mt-2 block text-xs font-medium text-slate-600">
+                          Activity
+                          <select
+                            className="mt-1 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                            onChange={(event) =>
+                              updateDraftProfile({
+                                activityLevel: event.target.value as ActivityLevel,
+                              })
+                            }
+                            value={draftProfile.activityLevel}
+                          >
+                            <option value="general">General</option>
+                            <option value="very_active">Very active</option>
+                          </select>
+                        </label>
+                        <p className="mt-2 text-[11px] leading-4 text-slate-500">
+                          Weight powers protein g/kg. Age, sex, height, weight,
+                          and activity power estimated maintenance calories.
+                        </p>
+                        <button
+                          className="mt-3 w-full rounded-full bg-slate-950 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                          disabled={profilePending || !profileChanged}
+                          type="submit"
+                        >
+                          {profilePending ? "Saving..." : "Save profile"}
+                        </button>
+                      </form>
+                    </div>
+                  </>
                 ) : null}
               </div>
             </div>
@@ -1571,6 +2219,19 @@ export default function Home() {
                         <h3 className="px-1 text-sm font-semibold text-slate-500">
                           {group.dayLabel}
                         </h3>
+                        <div className="rounded-2xl bg-emerald-50 p-3">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                            Day total
+                          </p>
+                          {renderNutrientGrid({
+                            className: "mt-2 text-emerald-700",
+                            customNutrients: getCustomNutrientItems(
+                              group.meals,
+                              trackedNutrients,
+                            ),
+                            macros: getMealMacroTotals(group.meals),
+                          })}
+                        </div>
                         {group.meals.map(renderMealCard)}
                       </div>
                     ))}
@@ -1768,6 +2429,246 @@ export default function Home() {
                 {settingsPending ? "Saving..." : "Save"}
               </button>
             </div>
+          </section>
+        </div>
+      ) : null}
+      {accessToken && analyticsOpen ? (
+        <div className="fixed inset-0 z-50 flex items-end bg-slate-950/40 p-4 sm:items-center sm:justify-center">
+          <button
+            aria-label="Close nutrition trends"
+            className="absolute inset-0 h-full w-full cursor-default"
+            onClick={() => setAnalyticsOpen(false)}
+            type="button"
+          />
+          <section
+            aria-modal="true"
+            className="relative z-10 max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
+            role="dialog"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold">Nutrition Trends</h2>
+                <p className="mt-1 text-sm leading-6 text-slate-500">
+                  Broad reference ranges are general guides; protein uses your
+                  saved weight and activity when available.
+                </p>
+              </div>
+              <button
+                className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600"
+                onClick={() => setAnalyticsOpen(false)}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+
+            <section className="mt-5">
+              <div className="flex items-baseline justify-between gap-3">
+                <h3 className="text-sm font-semibold text-slate-950">
+                  Trailing 30-day average
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {thirtyDayLoggedDays} logged days, {thirtyDayMealCount} meals
+                </p>
+              </div>
+
+              {thirtyDayLoggedDays === 0 ? (
+                <p className="mt-3 rounded-2xl border border-dashed border-slate-200 p-3 text-sm text-slate-500">
+                  Log meals to see 30-day averages.
+                </p>
+              ) : (
+                <div className="mt-3 overflow-hidden rounded-2xl border border-slate-200">
+                  <div className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] gap-3 bg-slate-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    <span>Nutrient</span>
+                    <span>30d avg</span>
+                    <span>7d trend</span>
+                    <span>Reference</span>
+                  </div>
+                  {coreMacroItems
+                    .filter((macroItem) => !hiddenCoreNutrients.includes(macroItem.key))
+                    .map((macroItem) => {
+                      const reference = macroCalorieReferences.find(
+                        (item) => item.key === macroItem.key,
+                      );
+                      const percent = reference
+                        ? getMacroCaloriePercent(
+                            thirtyDayAverageMacros,
+                            reference.key,
+                          )
+                        : null;
+                      const proteinReference = proteinReferences[profile.activityLevel];
+                      const proteinGramsPerKg =
+                        macroItem.key === "proteinGrams"
+                          ? getProteinGramsPerKg(thirtyDayAverageMacros, profile)
+                          : null;
+                      const calorieReference = getCalorieReferenceRange(profile);
+                      let status: "in-range" | "out-of-range" | "unknown" =
+                        "unknown";
+                      let referenceText = "varies";
+                      let basisText = "kcal/day";
+                      let trendReferenceMax: number | undefined;
+                      let trendReferenceMin: number | undefined;
+                      let trendStrokeColor = "#64748b";
+                      let trendPoints = sevenDayMacroRows.map((row) => ({
+                        dayKey: row.dayKey,
+                        value: row.mealCount > 0 ? row.macros.calories : null,
+                      }));
+
+                      if (macroItem.key === "calories") {
+                        if (calorieReference) {
+                          status = getRangeStatus(
+                            Math.round(thirtyDayAverageMacros.calories),
+                            calorieReference.min,
+                            calorieReference.max,
+                          );
+                          referenceText = `${calorieReference.min}-${calorieReference.max} kcal/day`;
+                          trendReferenceMax = calorieReference.max;
+                          trendReferenceMin = calorieReference.min;
+                        } else {
+                          referenceText = "Add profile";
+                        }
+                      } else if (macroItem.key === "fiberGrams") {
+                        status = getRangeStatus(
+                          Math.round(thirtyDayAverageMacros.fiberGrams),
+                          fiberChartReference.minGrams,
+                          fiberChartReference.maxGrams,
+                        );
+                        basisText = "g/day";
+                        referenceText = `${fiberChartReference.minGrams}-${fiberChartReference.maxGrams}g/day`;
+                        trendReferenceMax = fiberChartReference.maxGrams;
+                        trendReferenceMin = fiberChartReference.minGrams;
+                        trendStrokeColor = fiberChartReference.strokeColor;
+                        trendPoints = sevenDayMacroRows.map((row) => ({
+                          dayKey: row.dayKey,
+                          value:
+                            row.mealCount > 0 ? row.macros.fiberGrams : null,
+                        }));
+                      } else if (macroItem.key === "proteinGrams") {
+                        if (profile.weightPounds) {
+                          status = getRangeStatus(
+                            proteinGramsPerKg,
+                            proteinReference.minGramsPerKg,
+                            proteinReference.maxGramsPerKg,
+                          );
+                          basisText = formatGramsPerKg(proteinGramsPerKg);
+                          referenceText = `${proteinReference.minGramsPerKg}-${proteinReference.maxGramsPerKg}g/kg`;
+                          trendReferenceMax = proteinReference.maxGramsPerKg;
+                          trendReferenceMin = proteinReference.minGramsPerKg;
+                          trendPoints = sevenDayMacroRows.map((row) => ({
+                            dayKey: row.dayKey,
+                            value:
+                              row.mealCount > 0
+                                ? getProteinGramsPerKg(row.macros, profile)
+                                : null,
+                          }));
+                        } else {
+                          basisText = "g/day";
+                          referenceText = "Add weight";
+                          trendPoints = sevenDayMacroRows.map((row) => ({
+                            dayKey: row.dayKey,
+                            value:
+                              row.mealCount > 0
+                                ? row.macros.proteinGrams
+                                : null,
+                          }));
+                        }
+                        trendStrokeColor = reference?.strokeColor ?? "#34d399";
+                      } else if (reference) {
+                        status = getRangeStatus(
+                          percent,
+                          reference.minPercent,
+                          reference.maxPercent,
+                        );
+                        basisText = percent === null ? "--" : `${percent}% kcal`;
+                        referenceText = `${reference.minPercent}-${reference.maxPercent}% kcal`;
+                        trendReferenceMax = reference.maxPercent;
+                        trendReferenceMin = reference.minPercent;
+                        trendStrokeColor = reference.strokeColor;
+                        trendPoints = sevenDayMacroRows.map((row) => ({
+                          dayKey: row.dayKey,
+                          value:
+                            row.mealCount > 0
+                              ? (row.percents.find(
+                                  (item) => item.key === reference.key,
+                                )?.percent ?? null)
+                              : null,
+                        }));
+                      }
+
+                      return (
+                        <div
+                          className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] items-center gap-3 border-t border-slate-100 px-3 py-2 text-sm"
+                          key={macroItem.key}
+                        >
+                          <span className="font-medium text-slate-800">
+                            {formatNutrientName(macroItem.label)}
+                          </span>
+                          <div>
+                            <p className={getRangeTextClass(status)}>
+                              {macroItem.format(thirtyDayAverageMacros)}
+                            </p>
+                            <p className="text-xs text-slate-500">{basisText}</p>
+                          </div>
+                          {renderMiniTrendChart({
+                            points: trendPoints,
+                            referenceMax: trendReferenceMax,
+                            referenceMin: trendReferenceMin,
+                            strokeColor: trendStrokeColor,
+                          })}
+                          <span className="text-slate-500">{referenceText}</span>
+                        </div>
+                      );
+                    })}
+                  {thirtyDayAverageCustomNutrients.map((nutrient) => {
+                    const unitLabel =
+                      nutrient.unit === "amount" ? "amount/day" : `${nutrient.unit}/day`;
+                    const trendPoints = sevenDayKeys.map((dayKey) => {
+                      const dayMeals = mealsByDayKey[dayKey] ?? [];
+                      const trendNutrient = getCustomNutrientItems(
+                        dayMeals,
+                        [nutrient],
+                      )[0];
+
+                      return {
+                        dayKey,
+                        value:
+                          dayMeals.length > 0 && trendNutrient.estimatedMeals > 0
+                            ? trendNutrient.amount
+                            : null,
+                      };
+                    });
+
+                    return (
+                      <div
+                        className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] items-center gap-3 border-t border-slate-100 px-3 py-2 text-sm"
+                        key={`${nutrient.name}-${nutrient.unit}`}
+                      >
+                        <span className="font-medium text-slate-800">
+                          {formatNutrientName(nutrient.name)}
+                        </span>
+                        <div>
+                          <p>
+                            {nutrient.estimatedMeals > 0
+                              ? formatCustomNutrientAmount(
+                                  nutrient.amount,
+                                  nutrient.unit,
+                                )
+                              : "--"}
+                          </p>
+                          <p className="text-xs text-slate-500">{unitLabel}</p>
+                        </div>
+                        {renderMiniTrendChart({
+                          points: trendPoints,
+                          strokeColor: "#64748b",
+                        })}
+                        <span className="text-slate-500">varies</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
           </section>
         </div>
       ) : null}
