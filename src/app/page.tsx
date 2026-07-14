@@ -426,6 +426,25 @@ function DragHandleIcon() {
   );
 }
 
+function CautionIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M12 3 2.5 20h19L12 3Z" />
+      <path d="M12 9v5" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
 function EyeIcon() {
   return (
     <svg
@@ -1096,21 +1115,35 @@ export default function Home() {
             name,
           }));
     const macroBreakdown = meal.nutrition.macroBreakdown ?? [];
+    const cautions = meal.nutrition.cautions ?? [];
     const isEditing = editingMealId === meal.id;
     const isExpanded = expandedMealId === meal.id || isEditing;
 
     return (
       <article
-        className="rounded-2xl border border-slate-100 bg-slate-50 p-3"
+        className={`relative rounded-2xl border bg-slate-50 p-3 ${
+          cautions.length > 0
+            ? "border-amber-200 shadow-[0_0_0_1px_rgba(251,191,36,0.14)]"
+            : "border-slate-100"
+        }`}
         key={meal.id}
       >
-        <button
-          className="w-full text-left"
-          aria-label={`${isExpanded ? "Collapse" : "Expand"} ${getMealTitle(meal)}`}
-          onClick={() => setExpandedMealId(isExpanded ? null : meal.id)}
-          type="button"
-        >
-          <div className="flex items-start justify-between gap-2">
+        {cautions.length > 0 ? (
+          <span
+            aria-label="Meal caution"
+            className="absolute -right-1.5 -top-1.5 rounded-full border border-amber-200 bg-white p-1.5 text-amber-600 shadow-sm"
+            title="Meal caution"
+          >
+            <CautionIcon />
+          </span>
+        ) : null}
+        <div className="flex items-start gap-2">
+          <button
+            className="min-w-0 flex-1 text-left"
+            aria-label={`${isExpanded ? "Collapse" : "Expand"} ${getMealTitle(meal)}`}
+            onClick={() => setExpandedMealId(isExpanded ? null : meal.id)}
+            type="button"
+          >
             <div className="min-w-0">
               <h3 className="truncate text-base font-semibold text-slate-950">
                 {getMealTitle(meal)}
@@ -1119,16 +1152,23 @@ export default function Home() {
                 {formatMealTimeOfDay(meal.eatenAt)}
               </p>
             </div>
-            <span className="rounded-full p-1 text-slate-500">
+            {renderNutrientGrid({
+              className: "mt-2",
+              customNutrients,
+              macros,
+            })}
+          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              aria-label={`${isExpanded ? "Collapse" : "Expand"} ${getMealTitle(meal)}`}
+              className="rounded-full p-1 text-slate-500"
+              onClick={() => setExpandedMealId(isExpanded ? null : meal.id)}
+              type="button"
+            >
               <ChevronIcon direction={isExpanded ? "up" : "down"} />
-            </span>
+            </button>
           </div>
-          {renderNutrientGrid({
-            className: "mt-2",
-            customNutrients,
-            macros,
-          })}
-        </button>
+        </div>
 
         {isExpanded ? (
           <div className="mt-3 border-t border-slate-200 pt-3">
@@ -1163,6 +1203,24 @@ export default function Home() {
                     </button>
                   </div>
                 </div>
+
+                {cautions.length > 0 ? (
+                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                    <div className="space-y-3">
+                      {cautions.map((caution) => (
+                        <div key={`${caution.label}-${caution.description}`}>
+                          <p className="font-semibold">{caution.label}</p>
+                          <p className="mt-1 leading-5">{caution.description}</p>
+                          {caution.ingredients.length > 0 ? (
+                            <p className="mt-1 text-xs opacity-80">
+                              Watch: {caution.ingredients.join(", ")}
+                            </p>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 {macroBreakdown.length > 0 ? (
                   <details className="mt-4 rounded-2xl border border-slate-200 bg-white">

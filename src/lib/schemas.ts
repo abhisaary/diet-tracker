@@ -38,10 +38,17 @@ const customNutrientEstimateSchema = trackedNutrientSchema.extend({
   confidence: z.enum(["low", "medium", "high"]),
 });
 
+const mealCautionSchema = z.object({
+  description: z.string(),
+  ingredients: z.array(z.string()),
+  label: z.string(),
+});
+
 export const nutritionEstimateSchema = macroSchema.extend({
   calculationSummary: z.string().optional(),
   cleanedDescription: z.string().optional(),
   confidence: z.enum(["low", "medium", "high"]),
+  cautions: z.array(mealCautionSchema).optional(),
   customNutrients: z.array(customNutrientEstimateSchema).optional(),
   estimatedPortion: z.string(),
   ingredientEstimates: z.array(ingredientEstimateSchema).optional(),

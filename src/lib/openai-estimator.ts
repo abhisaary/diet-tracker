@@ -13,6 +13,13 @@ const estimateResponseSchema = z.object({
   fatGrams: z.number().nonnegative(),
   fiberGrams: z.number().nonnegative(),
   confidence: z.enum(["low", "medium", "high"]),
+  cautions: z.array(
+    z.object({
+      description: z.string(),
+      ingredients: z.array(z.string()),
+      label: z.string(),
+    }),
+  ),
   customNutrients: z.array(
     z.object({
       amount: z.number().nonnegative(),
@@ -60,6 +67,22 @@ const estimateJsonSchema = {
     fatGrams: { type: "number", minimum: 0 },
     fiberGrams: { type: "number", minimum: 0 },
     confidence: { type: "string", enum: ["low", "medium", "high"] },
+    cautions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          description: { type: "string" },
+          ingredients: {
+            type: "array",
+            items: { type: "string" },
+          },
+          label: { type: "string" },
+        },
+        required: ["label", "description", "ingredients"],
+      },
+    },
     customNutrients: {
       type: "array",
       items: {
@@ -141,6 +164,7 @@ const estimateJsonSchema = {
     "fatGrams",
     "fiberGrams",
     "confidence",
+    "cautions",
     "customNutrients",
     "estimatedPortion",
     "ingredientEstimates",
@@ -190,6 +214,8 @@ export async function estimateMealNutrition({
     trackedNutrients?.length
       ? `Also estimate these user-selected nutrients and return them in customNutrients using exactly these names and units: ${trackedNutrients.map((nutrient) => `${nutrient.name} (${nutrient.unit})`).join(", ")}.`
       : "Return customNutrients as an empty array because the user has not selected additional nutrients.",
+    "Return cautions as an empty array for meals with nothing notable to watch. Add a caution only when the meal has a meaningful macro imbalance, unusually large load, or plausible symptom-relevant pattern. This is a lightweight pattern-spotting hint, not medical advice. Prefer zero cautions for normal meals. Prefer one caution when a meal is worth watching. Return two cautions only if there are two clearly separate concerns; never add a second caution just because another example applies loosely. Do not use a fixed taxonomy; write a short natural label.",
+    "Examples of cautions worth considering, without treating this as a checklist: a heavy fat load late at night; lots of cruciferous vegetables or raw roughage in one sitting; very high fiber from beans/lentils/chickpeas; or stacked triggers such as fried/greasy plus spicy plus dairy. Each caution should include a one-sentence description and the likely contributing ingredients.",
     "Return calculationSummary as a concise one-sentence explanation of the ingredient-sum calculation. Return sanityCheck as one concise sentence noting whether the total looks plausible or what could swing it.",
     "Do not include hidden step-by-step reasoning; store only concise estimates, assumptions, calculationSummary, sanityCheck, and per-ingredient macroBasis.",
     recentMealContext
