@@ -918,6 +918,22 @@ export default function Home() {
     };
   }, [message]);
 
+  useEffect(() => {
+    if (!settingsOpen && !analyticsOpen) {
+      return;
+    }
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousDocumentOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousDocumentOverflow;
+    };
+  }, [analyticsOpen, settingsOpen]);
+
   const missingConfig = status
     ? Object.entries(status.configured)
         .filter(([, configured]) => !configured)
@@ -2243,7 +2259,7 @@ export default function Home() {
         )}
       </div>
       {accessToken && settingsOpen ? (
-        <div className="fixed inset-0 z-50 flex items-end bg-slate-950/40 p-4 sm:items-center sm:justify-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-slate-950/40 p-4">
           <button
             aria-label="Close settings"
             className="absolute inset-0 h-full w-full cursor-default"
@@ -2252,7 +2268,7 @@ export default function Home() {
           />
           <section
             aria-modal="true"
-            className="relative z-10 max-h-[85vh] w-full max-w-md overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
+            className="relative z-10 max-h-[85vh] w-full max-w-md overscroll-contain overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
             role="dialog"
           >
             <div className="flex items-start justify-between gap-4">
@@ -2433,7 +2449,7 @@ export default function Home() {
         </div>
       ) : null}
       {accessToken && analyticsOpen ? (
-        <div className="fixed inset-0 z-50 flex items-end bg-slate-950/40 p-4 sm:items-center sm:justify-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-slate-950/40 p-4">
           <button
             aria-label="Close nutrition trends"
             className="absolute inset-0 h-full w-full cursor-default"
@@ -2442,7 +2458,7 @@ export default function Home() {
           />
           <section
             aria-modal="true"
-            className="relative z-10 max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
+            className="relative z-10 max-h-[85vh] w-full max-w-2xl overscroll-contain overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
             role="dialog"
           >
             <div className="flex items-start justify-between gap-4">
