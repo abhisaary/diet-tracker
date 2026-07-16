@@ -18,6 +18,12 @@ type CustomNutrientItem = TrackedNutrient & {
   amount: number;
   estimatedMeals: number;
 };
+type PendingMealSubmission = {
+  createdAt: string;
+  description: string;
+  id: string;
+  status: "error" | "processing";
+};
 type MacroCalorieKey = "carbsGrams" | "fatGrams" | "proteinGrams";
 type ActivityLevel = "general" | "very_active";
 type SexForEstimate = "female" | "male";
@@ -811,6 +817,9 @@ export default function Home() {
   const [meals, setMeals] = useState<MealRecord[]>([]);
   const [newTrackedNutrient, setNewTrackedNutrient] = useState("");
   const [nutrientOrder, setNutrientOrder] = useState<string[]>([]);
+  const [pendingMealSubmissions, setPendingMealSubmissions] = useState<
+    PendingMealSubmission[]
+  >([]);
   const [profile, setProfile] = useState<UserProfile>(defaultUserProfile);
   const [profilePending, setProfilePending] = useState(false);
   const [savingMealId, setSavingMealId] = useState<string | null>(null);
@@ -890,6 +899,7 @@ export default function Home() {
         setHiddenCoreNutrients([]);
         setMeals([]);
         setNutrientOrder([]);
+        setPendingMealSubmissions([]);
         setProfile(defaultUserProfile);
         setDraftProfile(defaultUserProfile);
         setAccountMenuOpen(false);
@@ -1288,10 +1298,34 @@ export default function Home() {
     event.preventDefault();
     setMealPending(true);
     setMessage(null);
+    let pendingMealId: string | null = null;
 
     try {
       const form = event.currentTarget;
       const formData = new FormData(form);
+      const description = String(formData.get("description") ?? "").trim();
+      const photo = formData.get("photo");
+      const hasPhoto = photo instanceof File && photo.size > 0;
+
+      if (!description && !hasPhoto) {
+        showMessage({
+          kind: "error",
+          text: "Add a meal note or image before saving.",
+        });
+        return;
+      }
+
+      pendingMealId = crypto.randomUUID();
+      const pendingMeal: PendingMealSubmission = {
+        createdAt: new Date().toISOString(),
+        description: description || "Image-only meal",
+        id: pendingMealId,
+        status: "processing",
+      };
+
+      setPendingMealSubmissions((current) => [pendingMeal, ...current]);
+      form.reset();
+      setActiveForm(null);
       formData.set(
         "timezone",
         Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -1306,11 +1340,19 @@ export default function Home() {
         throw new Error(data.error ?? "Could not log meal.");
       }
 
-      form.reset();
-      setActiveForm(null);
+      setPendingMealSubmissions((current) =>
+        current.filter((meal) => meal.id !== pendingMealId),
+      );
       await loadMeals();
       showMessage({ kind: "success", text: "Meal saved." });
     } catch (error) {
+      if (pendingMealId) {
+        setPendingMealSubmissions((current) =>
+          current.map((meal) =>
+            meal.id === pendingMealId ? { ...meal, status: "error" } : meal,
+          ),
+        );
+      }
       showMessage({
         kind: "error",
         text: error instanceof Error ? error.message : "Could not log meal.",
@@ -1594,6 +1636,64 @@ export default function Home() {
     );
   }
 
+  function renderPendingMealCard(meal: PendingMealSubmission) {
+    const isError = meal.status === "error";
+
+    return (
+      <article
+        className={`rounded-2xl border p-3 ${
+          isError
+            ? "border-red-100 bg-red-50"
+            : "border-slate-200 bg-slate-50"
+        }`}
+        key={meal.id}
+      >
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate text-base font-semibold text-slate-950">
+              {meal.description}
+            </h3>
+            <p className="mt-1 text-xs font-medium text-slate-500">
+              {formatMealTimeOfDay(meal.createdAt)}
+            </p>
+            {renderProcessingPill(
+              isError ? "Could not estimate meal" : "Estimating nutrition...",
+              isError,
+            )}
+          </div>
+          {isError ? (
+            <button
+              className="rounded-full px-2 py-1 text-xs font-semibold text-red-600"
+              onClick={() =>
+                setPendingMealSubmissions((current) =>
+                  current.filter((pendingMeal) => pendingMeal.id !== meal.id),
+                )
+              }
+              type="button"
+            >
+              Dismiss
+            </button>
+          ) : null}
+        </div>
+      </article>
+    );
+  }
+
+  function renderProcessingPill(label: string, isError = false) {
+    return (
+      <div
+        className={`mt-3 inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold ${
+          isError ? "text-red-700" : "text-emerald-700"
+        }`}
+      >
+        {isError ? null : (
+          <span className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-600" />
+        )}
+        {label}
+      </div>
+    );
+  }
+
   function renderMealCard(meal: MealRecord) {
     const macros = getMealMacros(meal);
     const customNutrients = getCustomNutrientItems([meal], trackedNutrients);
@@ -1703,7 +1803,7 @@ export default function Home() {
                           <p className="mt-1 leading-5">{caution.description}</p>
                           {caution.ingredients.length > 0 ? (
                             <p className="mt-1 text-xs opacity-80">
-                              Watch: {caution.ingredients.join(", ")}
+                              Main culprits: {caution.ingredients.join(", ")}
                             </p>
                           ) : null}
                         </div>
@@ -1779,42 +1879,57 @@ export default function Home() {
               </>
             ) : (
               <>
-                <label className="block text-sm font-medium text-slate-700">
-                  Correction
-                  <textarea
-                    className="mt-2 min-h-24 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
-                    onChange={(event) =>
-                      updateMealCorrection(meal.id, event.target.value)
-                    }
-                    placeholder="e.g. actually it had full-fat yogurt, or closer to 5 tbsp peanut butter"
-                    value={mealCorrections[meal.id] ?? ""}
-                  />
-                </label>
-                <p className="mt-2 text-xs leading-5 text-slate-500">
-                  The model will apply this note to the existing meal, recompute
-                  ingredients and macros, and keep the result structured.
-                </p>
+                {savingMealId === meal.id ? (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-sm font-semibold text-slate-950">
+                      Updating meal
+                    </p>
+                    <p className="mt-1 text-sm leading-5 text-slate-600">
+                      Applying your correction and recalculating ingredients and
+                      macros.
+                    </p>
+                    {renderProcessingPill("Updating nutrition...")}
+                  </div>
+                ) : (
+                  <>
+                    <label className="block text-sm font-medium text-slate-700">
+                      Correction
+                      <textarea
+                        className="mt-2 min-h-24 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                        onChange={(event) =>
+                          updateMealCorrection(meal.id, event.target.value)
+                        }
+                        placeholder="e.g. actually it had full-fat yogurt, or closer to 5 tbsp peanut butter"
+                        value={mealCorrections[meal.id] ?? ""}
+                      />
+                    </label>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">
+                      The model will apply this note to the existing meal,
+                      recompute ingredients and macros, and keep the result
+                      structured.
+                    </p>
 
-                <div className="mt-3 grid grid-cols-2 gap-3">
-                  <button
-                    className="rounded-full border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-950"
-                    onClick={() => {
-                      setEditingMealId(null);
-                      updateMealCorrection(meal.id, "");
-                    }}
-                    type="button"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
-                    disabled={savingMealId === meal.id}
-                    onClick={() => saveMealCorrection(meal.id)}
-                    type="button"
-                  >
-                    {savingMealId === meal.id ? "Applying..." : "Apply"}
-                  </button>
-                </div>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <button
+                        className="rounded-full border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-950"
+                        onClick={() => {
+                          setEditingMealId(null);
+                          updateMealCorrection(meal.id, "");
+                        }}
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+                        onClick={() => saveMealCorrection(meal.id)}
+                        type="button"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
@@ -2205,12 +2320,13 @@ export default function Home() {
                 })}
               </div>
 
-              {todayMeals.length === 0 ? (
+              {todayMeals.length === 0 && pendingMealSubmissions.length === 0 ? (
                 <p className="mt-3 text-sm text-slate-500">
                   Meals you log today will show up here.
                 </p>
               ) : (
                 <div className="mt-3 flex flex-col gap-2">
+                  {pendingMealSubmissions.map(renderPendingMealCard)}
                   {todayMeals.map(renderMealCard)}
                 </div>
               )}
