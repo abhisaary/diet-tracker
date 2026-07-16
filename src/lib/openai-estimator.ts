@@ -2,7 +2,33 @@ import OpenAI from "openai";
 import { z } from "zod";
 
 import { getEnv, getOptionalEnv } from "@/lib/env";
-import type { NutritionEstimate, TrackedNutrient } from "@/lib/schemas";
+import {
+  CURRENT_PLANT_VARIETY_VERSION,
+  PLANT_VARIETY_CATEGORIES,
+} from "@/lib/plant-variety-rules";
+import type {
+  MealRecord,
+  NutritionEstimate,
+  TrackedNutrient,
+} from "@/lib/schemas";
+
+const plantVarietyEstimateSchema = z.object({
+  category: z.enum(PLANT_VARIETY_CATEGORIES),
+  name: z.string(),
+});
+
+const plantVarietyJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    category: {
+      type: "string",
+      enum: [...PLANT_VARIETY_CATEGORIES],
+    },
+    name: { type: "string" },
+  },
+  required: ["name", "category"],
+};
 
 const estimateResponseSchema = z.object({
   calories: z.number().nonnegative(),
@@ -50,6 +76,7 @@ const estimateResponseSchema = z.object({
   ),
   mealTitle: z.string(),
   notableIngredients: z.array(z.string()),
+  plantVarieties: z.array(plantVarietyEstimateSchema),
   possibleTriggers: z.array(z.string()),
   sanityCheck: z.string(),
   assumptions: z.array(z.string()),
@@ -145,6 +172,10 @@ const estimateJsonSchema = {
       type: "array",
       items: { type: "string" },
     },
+    plantVarieties: {
+      type: "array",
+      items: plantVarietyJsonSchema,
+    },
     possibleTriggers: {
       type: "array",
       items: { type: "string" },
@@ -172,11 +203,110 @@ const estimateJsonSchema = {
     "macroBreakdown",
     "mealTitle",
     "notableIngredients",
+    "plantVarieties",
     "possibleTriggers",
     "assumptions",
     "sanityCheck",
   ],
 };
+
+const plantBackfillResponseSchema = z.object({
+  meals: z.array(
+    z.object({
+      id: z.string().uuid(),
+      plantVarieties: z.array(plantVarietyEstimateSchema),
+    }),
+  ),
+});
+
+const plantBackfillJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    meals: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: { type: "string", format: "uuid" },
+          plantVarieties: {
+            type: "array",
+            items: plantVarietyJsonSchema,
+          },
+        },
+        required: ["id", "plantVarieties"],
+      },
+    },
+  },
+  required: ["meals"],
+};
+
+export async function estimateMealPlantVarieties(
+  meals: MealRecord[],
+): Promise<
+  {
+    id: string;
+    plantVarieties: NonNullable<
+      NutritionEstimate["plantVarieties"]
+    >;
+  }[]
+> {
+  if (meals.length === 0) {
+    return [];
+  }
+
+  const model = getOptionalEnv("OPENAI_MODEL") ?? "gpt-5.5";
+  const client = new OpenAI({ apiKey: getEnv("OPENAI_API_KEY") });
+  const mealContext = meals
+    .map((meal) => {
+      const ingredients =
+        meal.nutrition.ingredientEstimates
+          ?.map((ingredient) => `${ingredient.name}: ${ingredient.amount}`)
+          .join("; ") || meal.nutrition.notableIngredients.join("; ");
+
+      return [
+        `Meal ID: ${meal.id}`,
+        `Title: ${meal.nutrition.mealTitle || "Unknown"}`,
+        `Description: ${meal.nutrition.cleanedDescription || meal.description}`,
+        ingredients ? `Ingredients: ${ingredients}` : "",
+        meal.restaurantLink ? `Restaurant/menu link: ${meal.restaurantLink}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
+  const prompt = [
+    "Classify Fiber Fueled-style plant variety points for the existing meals below without changing any other meal data.",
+    "Return exactly one result for every supplied meal ID.",
+    "Include each unique fruit, vegetable, whole grain, legume, nut, seed, and fresh herb present in a meal. List each qualifying plant only once per meal.",
+    "Use lowercase singular canonical source-plant names: tofu/tempeh/edamame are soybean, peanut butter is peanut, hummus includes chickpea and sesame only when tahini is present, and whole-grain bread can include wheat.",
+    "Exclude animal foods, refined grains such as white rice or white flour, refined oils, juice, added sweeteners, and dried herbs or spices. Be conservative when unclear.",
+    "For packaged foods, count only intentional components or nutritionally meaningful ingredients. Exclude trace ingredients, anything identified as 'contains 2% or less', and flavors, colors, preservatives, stabilizers, or emulsifiers.",
+    "Do not apply a universal gram cutoff: a deliberately added small topping, nut, seed, or fresh herb still counts.",
+    "If a meal names a restaurant or menu item and its ingredients are incomplete, use web search to find the official or closest reliable menu description before classifying it.",
+    "",
+    mealContext,
+  ].join("\n");
+  const response = await client.responses.create({
+    input: prompt,
+    model,
+    text: {
+      format: {
+        name: "meal_plant_variety_backfill",
+        schema: plantBackfillJsonSchema,
+        strict: true,
+        type: "json_schema",
+      },
+    },
+    tool_choice: "auto",
+    tools: [{ type: "web_search" }],
+  });
+
+  return plantBackfillResponseSchema.parse(
+    JSON.parse(response.output_text),
+  ).meals;
+}
 
 export async function estimateMealNutrition({
   description,
@@ -210,6 +340,11 @@ export async function estimateMealNutrition({
     "Return cleanedDescription as a concise normalized meal description suitable for a meal log.",
     "Return ingredientEstimates as a complete ingredient list with approximate amounts per ingredient. Do not use a combined dish or menu item name as a single ingredient when it can be decomposed; for example, a restaurant veg salad should be broken into greens, roasted vegetables, cheese, dressing/sauce, nuts/seeds, olives, onions, and other listed components.",
     "Return macroBreakdown using the same ingredients as ingredientEstimates. Each macroBasis should be a brief citation-like phrase such as 'typical cooked white rice, 1 cup', 'plain Greek yogurt, 170 g', or 'restaurant menu lists roasted sweet potato and garlic yogurt'.",
+    "Return plantVarieties as the unique Fiber Fueled-style plant points present in this meal. Include fruits, vegetables, whole grains, legumes, nuts, seeds, and fresh herbs. Each distinct plant contributes one point later, so list it only once per meal.",
+    "Use a lowercase singular canonical plant name so meals can be deduplicated across the week. Normalize foods to their source plant where appropriate: tofu/tempeh/edamame are soybean, peanut butter is peanut, hummus includes chickpea and sesame only when tahini is present, and whole-grain bread can include wheat. Keep meaningfully different plants such as chickpea, lentil, black bean, kale, and cabbage separate.",
+    "For Fiber Fueled-style counting, exclude animal foods, refined grains such as white rice or white flour, refined oils, juice, added sweeteners, and dried herbs or spices. Fresh herbs count as one point. Be conservative when an ingredient or processing level is unclear.",
+    "For packaged foods, count only intentional components or nutritionally meaningful ingredients. Exclude trace ingredients, anything identified as 'contains 2% or less', and flavors, colors, preservatives, stabilizers, or emulsifiers.",
+    "Do not apply a universal gram cutoff: a deliberately added small topping, nut, seed, or fresh herb still counts.",
     trackedNutrients?.length
       ? `Also estimate these user-selected nutrients and return them in customNutrients using exactly these names and units: ${trackedNutrients.map((nutrient) => `${nutrient.name} (${nutrient.unit})`).join(", ")}.`
       : "Return customNutrients as an empty array because the user has not selected additional nutrients.",
@@ -272,5 +407,6 @@ export async function estimateMealNutrition({
     ...parsed,
     estimatedAt: new Date().toISOString(),
     model,
+    plantVarietyVersion: CURRENT_PLANT_VARIETY_VERSION,
   };
 }

@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 
+import { CURRENT_PLANT_VARIETY_VERSION } from "@/lib/plant-variety-rules";
 import type { MealRecord, MacroTotals, TrackedNutrient } from "@/lib/schemas";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
 
@@ -40,6 +41,9 @@ type UploadedMealPhoto = {
   fileId: string;
   fileName: string;
 };
+type PlantVariety = NonNullable<
+  MealRecord["nutrition"]["plantVarieties"]
+>[number];
 type MacroCalorieKey = "carbsGrams" | "fatGrams" | "proteinGrams";
 type ActivityLevel = "general" | "very_active";
 type SexForEstimate = "female" | "male";
@@ -50,6 +54,9 @@ type UserProfile = {
   sex?: SexForEstimate;
   weightPounds?: number;
 };
+
+const plantBackfillLockKey = `diet-tracker:plant-backfill:${CURRENT_PLANT_VARIETY_VERSION}`;
+const plantBackfillLockDurationMs = 10 * 60 * 1000;
 
 const coreMacroItems: {
   format: (macros: MacroTotals) => string;
@@ -234,6 +241,98 @@ function addLocalDays(date: Date, days: number) {
   nextDate.setDate(nextDate.getDate() + days);
 
   return nextDate;
+}
+
+function getPlantVarietyKey(name: string) {
+  const normalizedName = name
+    .trim()
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  const aliases: Record<string, string> = {
+    "garbanzo bean": "chickpea",
+    "garbanzo beans": "chickpea",
+    chickpeas: "chickpea",
+    "soy bean": "soybean",
+    soybeans: "soybean",
+  };
+
+  return aliases[normalizedName] ?? normalizedName;
+}
+
+function getUniquePlantCount(meals: MealRecord[]) {
+  const plants = new Set<string>();
+
+  for (const meal of meals) {
+    for (const variety of meal.nutrition.plantVarieties ?? []) {
+      const key = getPlantVarietyKey(variety.name);
+
+      if (key) {
+        plants.add(key);
+      }
+    }
+  }
+
+  return plants.size;
+}
+
+function getLocalDaySerial(date: Date) {
+  return (
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) /
+    (24 * 60 * 60 * 1000)
+  );
+}
+
+function getPlantDiversitySnapshot(
+  meals: MealRecord[],
+  evaluationDate: Date,
+) {
+  const evaluationDay = getLocalDaySerial(evaluationDate);
+  const latestPlants = new Map<
+    string,
+    { lastSeenDay: number; variety: PlantVariety }
+  >();
+
+  for (const meal of meals) {
+    const mealDay = getLocalDaySerial(new Date(meal.eatenAt));
+
+    if (mealDay > evaluationDay) {
+      continue;
+    }
+
+    for (const variety of meal.nutrition.plantVarieties ?? []) {
+      const key = getPlantVarietyKey(variety.name);
+      const current = latestPlants.get(key);
+
+      if (key && (!current || mealDay > current.lastSeenDay)) {
+        latestPlants.set(key, {
+          lastSeenDay: mealDay,
+          variety: { ...variety, name: key },
+        });
+      }
+    }
+  }
+
+  const activePlants = [...latestPlants.values()]
+    .map(({ lastSeenDay, variety }) => {
+      const daysSinceSeen = evaluationDay - lastSeenDay;
+
+      return {
+        ...variety,
+        weight: Math.max(0, 1 - daysSinceSeen / 14),
+      };
+    })
+    .filter((plant) => plant.weight > 0)
+    .sort(
+      (first, second) =>
+        second.weight - first.weight || first.name.localeCompare(second.name),
+    );
+
+  return {
+    activePlants,
+    score: activePlants.reduce((total, plant) => total + plant.weight, 0),
+  };
 }
 
 function getMealMacroTotals(meals: MealRecord[]): MacroTotals {
@@ -832,6 +931,7 @@ function toStatusMessage(
 
 export default function Home() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
+  const plantBackfillRunning = useRef(false);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [activeForm, setActiveForm] = useState<"meal" | "symptom" | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
@@ -1070,6 +1170,17 @@ export default function Home() {
     setAccountMenuOpen(false);
     setSettingsOpen(false);
     setAnalyticsOpen(true);
+
+    if (
+      accessToken &&
+      meals.some(
+        (meal) =>
+          meal.nutrition.plantVarietyVersion !==
+          CURRENT_PLANT_VARIETY_VERSION,
+      )
+    ) {
+      void backfillPlantVarieties(accessToken);
+    }
   }
 
   async function authenticatedFetch(input: RequestInfo, init: RequestInit = {}) {
@@ -1267,7 +1378,60 @@ export default function Home() {
     );
   }
 
-  async function loadMeals(token = accessToken) {
+  async function backfillPlantVarieties(token: string) {
+    if (plantBackfillRunning.current) {
+      return;
+    }
+
+    const existingLock = Number(
+      window.localStorage.getItem(plantBackfillLockKey),
+    );
+
+    if (
+      Number.isFinite(existingLock) &&
+      Date.now() - existingLock < plantBackfillLockDurationMs
+    ) {
+      return;
+    }
+
+    const lockStartedAt = Date.now();
+    window.localStorage.setItem(plantBackfillLockKey, String(lockStartedAt));
+    plantBackfillRunning.current = true;
+
+    try {
+      for (let batchIndex = 0; batchIndex < 50; batchIndex += 1) {
+        const response = await fetch("/api/meals/regenerate", {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          method: "PUT",
+        });
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error ?? "Could not backfill plant history.");
+        }
+
+        if (data.remaining === 0 || data.processed === 0) {
+          break;
+        }
+      }
+
+      await loadMeals(token, false);
+    } catch (error) {
+      console.error("Plant history backfill failed:", error);
+    } finally {
+      if (
+        window.localStorage.getItem(plantBackfillLockKey) ===
+        String(lockStartedAt)
+      ) {
+        window.localStorage.removeItem(plantBackfillLockKey);
+      }
+      plantBackfillRunning.current = false;
+    }
+  }
+
+  async function loadMeals(token = accessToken, shouldBackfillPlants = true) {
     if (!token) {
       return;
     }
@@ -1285,6 +1449,17 @@ export default function Home() {
 
     const nextMeals = data.meals as MealRecord[];
     setMeals(nextMeals);
+
+    if (
+      shouldBackfillPlants &&
+      nextMeals.some(
+        (meal) =>
+          meal.nutrition.plantVarietyVersion !==
+          CURRENT_PLANT_VARIETY_VERSION,
+      )
+    ) {
+      void backfillPlantVarieties(token);
+    }
   }
 
   function updateMealCorrection(mealId: string, correction: string) {
@@ -1647,6 +1822,44 @@ export default function Home() {
       })),
     };
   });
+  const plantDiversityAnalysis = useMemo(() => {
+    const referenceDate = new Date(`${todayDayKey}T12:00:00`);
+    const analyzedMealDays = meals
+      .filter((meal) => meal.nutrition.plantVarieties !== undefined)
+      .map((meal) => getLocalDaySerial(new Date(meal.eatenAt)));
+    const firstAnalyzedDay =
+      analyzedMealDays.length > 0 ? Math.min(...analyzedMealDays) : null;
+    const points = Array.from({ length: 56 }, (_, index) => {
+      const date = addLocalDays(referenceDate, index - 55);
+      const snapshot = getPlantDiversitySnapshot(meals, date);
+      const hasTrackingData =
+        firstAnalyzedDay !== null &&
+        getLocalDaySerial(date) >= firstAnalyzedDay;
+
+      return {
+        date,
+        dayKey: getLocalDayKey(date.toISOString()),
+        snapshot,
+        value: hasTrackingData ? snapshot.score : null,
+      };
+    });
+    const firstTrackedPointIndex = points.findIndex(
+      (point) => point.value !== null,
+    );
+    const chartPoints =
+      firstTrackedPointIndex === -1
+        ? []
+        : points.slice(firstTrackedPointIndex);
+
+    return {
+      chartPoints,
+      chartWidthPercent: Math.max(
+        35,
+        (chartPoints.length / points.length) * 100,
+      ),
+      current: points[points.length - 1].snapshot,
+    };
+  }, [meals, todayDayKey]);
   const draftHeightFeet = draftProfile.heightInches
     ? Math.floor(draftProfile.heightInches / 12)
     : "";
@@ -1658,10 +1871,12 @@ export default function Home() {
     customNutrients,
     macros,
     className = "",
+    plantCount,
   }: {
     customNutrients: CustomNutrientItem[];
     macros: MacroTotals;
     className?: string;
+    plantCount?: number;
   }) {
     const nutrientItems = getOrderedNutrientItems({
       customNutrients,
@@ -1670,7 +1885,7 @@ export default function Home() {
       nutrientOrder,
     });
 
-    if (nutrientItems.length === 0) {
+    if (nutrientItems.length === 0 && plantCount === undefined) {
       return null;
     }
 
@@ -1686,6 +1901,14 @@ export default function Home() {
             </p>
           </div>
         ))}
+        {plantCount !== undefined ? (
+          <div className="min-w-14 max-w-24">
+            <p className="truncate font-semibold leading-tight">{plantCount}</p>
+            <p className="truncate text-[11px] leading-tight text-slate-500">
+              plant varieties
+            </p>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -1714,11 +1937,11 @@ export default function Home() {
     }
 
     const bounds = {
-      bottom: 48,
-      height: 34,
+      bottom: 30,
+      height: 24,
       left: 0,
       right: 220,
-      top: 14,
+      top: 6,
       width: 220,
     };
     const maxValue = Math.max(...values, referenceMax ?? 0, 1);
@@ -1745,9 +1968,9 @@ export default function Home() {
     return (
       <svg
         aria-label="Last 7 days trend"
-        className="mt-1 h-auto w-full overflow-visible"
+        className="h-auto w-full overflow-visible"
         role="img"
-        viewBox="0 0 220 56"
+        viewBox="0 0 220 36"
       >
         <line
           className="stroke-slate-200"
@@ -1798,6 +2021,129 @@ export default function Home() {
             vectorEffect="non-scaling-stroke"
           />
         ))}
+      </svg>
+    );
+  }
+
+  function renderPlantDiversityChart(
+    points: {
+      date: Date;
+      dayKey: string;
+      value: number | null;
+    }[],
+  ) {
+    const values = points
+      .map((point) => point.value)
+      .filter((value): value is number => value !== null);
+
+    if (values.length === 0) {
+      return (
+        <p className="text-xs text-slate-400">No history yet.</p>
+      );
+    }
+
+    const bounds = {
+      bottom: 44,
+      height: 40,
+      left: 2,
+      right: 298,
+      top: 4,
+      width: 296,
+    };
+    const yMax = Math.max(5, Math.ceil(Math.max(...values) * 1.15));
+    const xStep = bounds.width / Math.max(points.length - 1, 1);
+    const yForValue = (value: number) =>
+      bounds.bottom - Math.min(Math.max(value, 0), yMax) * (bounds.height / yMax);
+    const chartPoints = points.flatMap((point, index) =>
+      point.value === null
+        ? []
+        : [
+            {
+              ...point,
+              x: bounds.left + index * xStep,
+              y: yForValue(point.value),
+            },
+          ],
+    );
+    const lastPoint = chartPoints[chartPoints.length - 1];
+    const weeklyTickIndexes: number[] = [];
+
+    for (let index = points.length - 1; index >= 0; index -= 7) {
+      weeklyTickIndexes.unshift(index);
+    }
+
+    return (
+      <svg
+        aria-label="Weekly plant diversity trend"
+        className="h-auto w-full overflow-visible"
+        role="img"
+        viewBox="0 0 300 64"
+      >
+        <line
+          className="stroke-slate-200"
+          vectorEffect="non-scaling-stroke"
+          x1={bounds.left}
+          x2={bounds.right}
+          y1={bounds.bottom}
+          y2={bounds.bottom}
+        />
+        {weeklyTickIndexes.map((index) => {
+          const point = points[index];
+          const x = bounds.left + index * xStep;
+
+          return (
+            <g key={point.dayKey}>
+              <line
+                className="stroke-slate-300"
+                vectorEffect="non-scaling-stroke"
+                x1={x}
+                x2={x}
+                y1={bounds.bottom}
+                y2={bounds.bottom + 4}
+              />
+              <text
+                fill="#94a3b8"
+                fontSize="7"
+                textAnchor={
+                  index === 0
+                    ? "start"
+                    : index === points.length - 1
+                      ? "end"
+                      : "middle"
+                }
+                x={x}
+                y="60"
+              >
+                {new Intl.DateTimeFormat(undefined, {
+                  month: "numeric",
+                  day: "numeric",
+                }).format(point.date)}
+              </text>
+            </g>
+          );
+        })}
+        {chartPoints.length > 1 ? (
+          <polyline
+            fill="none"
+            points={chartPoints.map((point) => `${point.x},${point.y}`).join(" ")}
+            stroke="#10b981"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2.5"
+            vectorEffect="non-scaling-stroke"
+          />
+        ) : null}
+        {lastPoint ? (
+          <circle
+            cx={lastPoint.x}
+            cy={lastPoint.y}
+            fill="#10b981"
+            r="3.5"
+            stroke="white"
+            strokeWidth="1.5"
+            vectorEffect="non-scaling-stroke"
+          />
+        ) : null}
       </svg>
     );
   }
@@ -2529,6 +2875,7 @@ export default function Home() {
                   className: "mt-2",
                   customNutrients: todayCustomNutrients,
                   macros: todayMacros,
+                  plantCount: getUniquePlantCount(todayMeals),
                 })}
               </div>
 
@@ -2574,6 +2921,7 @@ export default function Home() {
                               trackedNutrients,
                             ),
                             macros: getMealMacroTotals(group.meals),
+                            plantCount: getUniquePlantCount(group.meals),
                           })}
                         </div>
                         {group.meals.map(renderMealCard)}
@@ -2792,10 +3140,6 @@ export default function Home() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold">Nutrition Trends</h2>
-                <p className="mt-1 text-sm leading-6 text-slate-500">
-                  Broad reference ranges are general guides; protein uses your
-                  saved weight and activity when available.
-                </p>
               </div>
               <button
                 className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600"
@@ -2807,9 +3151,54 @@ export default function Home() {
             </div>
 
             <section className="mt-5">
+              <h3 className="text-sm font-semibold text-slate-950">
+                Weekly plant diversity
+              </h3>
+              <div className="mt-2 flex items-center gap-4">
+                <p className="w-20 shrink-0 text-4xl font-semibold text-emerald-700">
+                  {plantDiversityAnalysis.current.score.toFixed(1)}
+                </p>
+                <div className="flex min-w-0 flex-1 items-center">
+                  <div
+                    className="min-w-28 max-w-full rounded-xl bg-slate-50 px-2 py-1"
+                    style={{
+                      width: `${plantDiversityAnalysis.chartWidthPercent}%`,
+                    }}
+                  >
+                    {renderPlantDiversityChart(
+                      plantDiversityAnalysis.chartPoints,
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <details className="mt-3 rounded-2xl border border-slate-200">
+                <summary className="cursor-pointer px-3 py-2.5 text-sm font-semibold text-slate-700">
+                  Plants from the last 14 days
+                </summary>
+                <div className="border-t border-slate-100 px-3 py-3">
+                  {plantDiversityAnalysis.current.activePlants.length > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {plantDiversityAnalysis.current.activePlants.map((plant) => (
+                        <span
+                          className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-800"
+                          key={getPlantVarietyKey(plant.name)}
+                        >
+                          {formatNutrientName(plant.name)}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-500">No plants counted.</p>
+                  )}
+                </div>
+              </details>
+            </section>
+
+            <section className="mt-6">
               <div className="flex items-baseline justify-between gap-3">
                 <h3 className="text-sm font-semibold text-slate-950">
-                  Trailing 30-day average
+                  Nutrition averages
                 </h3>
                 <p className="text-xs text-slate-500">
                   {thirtyDayLoggedDays} logged days, {thirtyDayMealCount} meals
@@ -2941,7 +3330,7 @@ export default function Home() {
 
                       return (
                         <div
-                          className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] items-center gap-3 border-t border-slate-100 px-3 py-2 text-sm"
+                          className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] items-center gap-3 border-t border-slate-100 px-3 py-1 text-xs"
                           key={macroItem.key}
                         >
                           <span className="font-medium text-slate-800">
@@ -2951,7 +3340,9 @@ export default function Home() {
                             <p className={getRangeTextClass(status)}>
                               {macroItem.format(thirtyDayAverageMacros)}
                             </p>
-                            <p className="text-xs text-slate-500">{basisText}</p>
+                            <p className="text-[10px] leading-3 text-slate-500">
+                              {basisText}
+                            </p>
                           </div>
                           {renderMiniTrendChart({
                             points: trendPoints,
@@ -2984,7 +3375,7 @@ export default function Home() {
 
                     return (
                       <div
-                        className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] items-center gap-3 border-t border-slate-100 px-3 py-2 text-sm"
+                        className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] items-center gap-3 border-t border-slate-100 px-3 py-1 text-xs"
                         key={`${nutrient.name}-${nutrient.unit}`}
                       >
                         <span className="font-medium text-slate-800">
@@ -2999,7 +3390,9 @@ export default function Home() {
                                 )
                               : "--"}
                           </p>
-                          <p className="text-xs text-slate-500">{unitLabel}</p>
+                          <p className="text-[10px] leading-3 text-slate-500">
+                            {unitLabel}
+                          </p>
                         </div>
                         {renderMiniTrendChart({
                           points: trendPoints,

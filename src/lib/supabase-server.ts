@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 
 import { getEnv, getOptionalEnv } from "@/lib/env";
+import { CURRENT_PLANT_VARIETY_VERSION } from "@/lib/plant-variety-rules";
 import {
   macroSchema,
   mealRecordSchema,
@@ -467,6 +468,37 @@ export async function replaceMealNutrition({
       nutrition,
     })
     .eq("id", id)
+    .eq("user_id", userId)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return toMealRecord(data as MealRow);
+}
+
+export async function updateMealPlantVarieties({
+  meal,
+  plantVarieties,
+  supabase,
+  userId,
+}: {
+  meal: MealRecord;
+  plantVarieties: NonNullable<NutritionEstimate["plantVarieties"]>;
+  supabase: SupabaseClient;
+  userId: string;
+}) {
+  const nutrition = nutritionEstimateSchema.parse({
+    ...meal.nutrition,
+    plantVarieties,
+    plantVarietyVersion: CURRENT_PLANT_VARIETY_VERSION,
+  });
+  const { data, error } = await supabase
+    .from("meals")
+    .update({ nutrition })
+    .eq("id", meal.id)
     .eq("user_id", userId)
     .select("*")
     .single();

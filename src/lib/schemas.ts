@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { PLANT_VARIETY_CATEGORIES } from "@/lib/plant-variety-rules";
+
 const optionalUrlSchema = z.preprocess(
   (value) =>
     typeof value === "string" && value.trim().length === 0 ? undefined : value,
@@ -49,6 +51,11 @@ const mealCautionSchema = z.object({
   label: z.string(),
 });
 
+const plantVarietySchema = z.object({
+  category: z.enum(PLANT_VARIETY_CATEGORIES),
+  name: z.string(),
+});
+
 export const nutritionEstimateSchema = macroSchema.extend({
   calculationSummary: z.string().optional(),
   cleanedDescription: z.string().optional(),
@@ -61,6 +68,8 @@ export const nutritionEstimateSchema = macroSchema.extend({
   macroBreakdown: z.array(ingredientMacroEstimateSchema).optional(),
   mealTitle: z.string().optional(),
   notableIngredients: z.array(z.string()),
+  plantVarieties: z.array(plantVarietySchema).optional(),
+  plantVarietyVersion: z.number().int().positive().optional(),
   possibleTriggers: z.array(z.string()),
   sanityCheck: z.string().optional(),
   assumptions: z.array(z.string()),
