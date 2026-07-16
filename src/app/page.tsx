@@ -29,7 +29,6 @@ type PendingMealSubmission = {
   createdAt: string;
   description: string;
   id: string;
-  photoCount: number;
   status: "error" | "processing";
 };
 type MealPhotoDraft = {
@@ -1469,7 +1468,6 @@ export default function Home() {
         createdAt: new Date().toISOString(),
         description: description || "Image-only meal",
         id: pendingMealId,
-        photoCount: photos.length,
         status: "processing",
       };
 
@@ -1823,16 +1821,9 @@ export default function Home() {
             </h3>
             <p className="mt-1 text-xs font-medium text-slate-500">
               {formatMealTimeOfDay(meal.createdAt)}
-              {meal.photoCount > 0
-                ? ` · ${meal.photoCount} ${meal.photoCount === 1 ? "photo" : "photos"}`
-                : ""}
             </p>
             {renderProcessingPill(
-              isError
-                ? "Could not estimate meal"
-                : meal.photoCount > 0
-                  ? "Uploading photos and estimating..."
-                  : "Estimating nutrition...",
+              isError ? "Could not estimate meal" : "Estimating nutrition...",
               isError,
             )}
           </div>
@@ -1881,7 +1872,6 @@ export default function Home() {
           }));
     const macroBreakdown = meal.nutrition.macroBreakdown ?? [];
     const cautions = meal.nutrition.cautions ?? [];
-    const photoCount = meal.photos?.length ?? (meal.photoFileId ? 1 : 0);
     const isEditing = editingMealId === meal.id;
     const isExpanded = expandedMealId === meal.id || isEditing;
 
@@ -1916,9 +1906,6 @@ export default function Home() {
               </h3>
               <p className="mt-1 text-xs font-medium text-slate-500">
                 {formatMealTimeOfDay(meal.eatenAt)}
-                {photoCount > 0
-                  ? ` · ${photoCount} ${photoCount === 1 ? "photo" : "photos"}`
-                  : ""}
               </p>
             </div>
             {renderNutrientGrid({
