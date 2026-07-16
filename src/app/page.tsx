@@ -1,6 +1,13 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import {
+  ChangeEvent,
+  FormEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { MealRecord, MacroTotals, TrackedNutrient } from "@/lib/schemas";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
@@ -22,7 +29,13 @@ type PendingMealSubmission = {
   createdAt: string;
   description: string;
   id: string;
+  photoCount: number;
   status: "error" | "processing";
+};
+type MealPhotoDraft = {
+  file: File;
+  id: string;
+  previewUrl: string;
 };
 type MacroCalorieKey = "carbsGrams" | "fatGrams" | "proteinGrams";
 type ActivityLevel = "general" | "very_active";
@@ -816,6 +829,8 @@ export default function Home() {
   const [loginPassword, setLoginPassword] = useState("");
   const [mealCorrections, setMealCorrections] = useState<Record<string, string>>({});
   const [mealPending, setMealPending] = useState(false);
+  const [mealPhotos, setMealPhotos] = useState<MealPhotoDraft[]>([]);
+  const mealPhotosRef = useRef<MealPhotoDraft[]>([]);
   const [meals, setMeals] = useState<MealRecord[]>([]);
   const [newTrackedNutrient, setNewTrackedNutrient] = useState("");
   const [nutrientOrder, setNutrientOrder] = useState<string[]>([]);
@@ -842,6 +857,52 @@ export default function Home() {
   function showMessage(nextMessage: { kind: "error" | "success"; text: string }) {
     setMessageVisible(true);
     setMessage(nextMessage);
+  }
+
+  function addMealPhotos(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+
+    if (!files.length) {
+      return;
+    }
+
+    const availableSlots = maxMealPhotos - mealPhotosRef.current.length;
+    const filesToAdd = files.slice(0, Math.max(availableSlots, 0));
+    const additions = filesToAdd.map((file) => ({
+      file,
+      id: crypto.randomUUID(),
+      previewUrl: URL.createObjectURL(file),
+    }));
+    const nextPhotos = [...mealPhotosRef.current, ...additions];
+
+    mealPhotosRef.current = nextPhotos;
+    setMealPhotos(nextPhotos);
+
+    if (files.length > filesToAdd.length) {
+      showMessage({
+        kind: "error",
+        text: `Only ${maxMealPhotos} images can be added to one meal.`,
+      });
+    }
+  }
+
+  function clearMealPhotos() {
+    mealPhotosRef.current.forEach((photo) => URL.revokeObjectURL(photo.previewUrl));
+    mealPhotosRef.current = [];
+    setMealPhotos([]);
+  }
+
+  function removeMealPhoto(photoId: string) {
+    const photo = mealPhotosRef.current.find((item) => item.id === photoId);
+
+    if (photo) {
+      URL.revokeObjectURL(photo.previewUrl);
+    }
+
+    const nextPhotos = mealPhotosRef.current.filter((item) => item.id !== photoId);
+    mealPhotosRef.current = nextPhotos;
+    setMealPhotos(nextPhotos);
   }
 
   function applyUserSettings(metadata: Record<string, unknown> | undefined) {
@@ -929,6 +990,15 @@ export default function Home() {
       window.clearTimeout(clearTimer);
     };
   }, [message]);
+
+  useEffect(
+    () => () => {
+      mealPhotosRef.current.forEach((photo) =>
+        URL.revokeObjectURL(photo.previewUrl),
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!settingsOpen && !analyticsOpen) {
@@ -1306,9 +1376,9 @@ export default function Home() {
       const form = event.currentTarget;
       const formData = new FormData(form);
       const description = String(formData.get("description") ?? "").trim();
-      const photos = formData
-        .getAll("photos")
-        .filter((value): value is File => value instanceof File && value.size > 0);
+      const photos = mealPhotosRef.current.map((photo) => photo.file);
+
+      photos.forEach((photo) => formData.append("photos", photo, photo.name));
 
       if (!description && !photos.length) {
         showMessage({
@@ -1331,11 +1401,13 @@ export default function Home() {
         createdAt: new Date().toISOString(),
         description: description || "Image-only meal",
         id: pendingMealId,
+        photoCount: photos.length,
         status: "processing",
       };
 
       setPendingMealSubmissions((current) => [pendingMeal, ...current]);
       form.reset();
+      clearMealPhotos();
       setActiveForm(null);
       formData.set(
         "timezone",
@@ -1666,6 +1738,9 @@ export default function Home() {
             </h3>
             <p className="mt-1 text-xs font-medium text-slate-500">
               {formatMealTimeOfDay(meal.createdAt)}
+              {meal.photoCount > 0
+                ? ` · ${meal.photoCount} ${meal.photoCount === 1 ? "photo" : "photos"}`
+                : ""}
             </p>
             {renderProcessingPill(
               isError ? "Could not estimate meal" : "Estimating nutrition...",
@@ -1717,6 +1792,7 @@ export default function Home() {
           }));
     const macroBreakdown = meal.nutrition.macroBreakdown ?? [];
     const cautions = meal.nutrition.cautions ?? [];
+    const photoCount = meal.photos?.length ?? (meal.photoFileId ? 1 : 0);
     const isEditing = editingMealId === meal.id;
     const isExpanded = expandedMealId === meal.id || isEditing;
 
@@ -1751,6 +1827,9 @@ export default function Home() {
               </h3>
               <p className="mt-1 text-xs font-medium text-slate-500">
                 {formatMealTimeOfDay(meal.eatenAt)}
+                {photoCount > 0
+                  ? ` · ${photoCount} ${photoCount === 1 ? "photo" : "photos"}`
+                  : ""}
               </p>
             </div>
             {renderNutrientGrid({
@@ -2278,15 +2357,60 @@ export default function Home() {
                   placeholder="What did you eat? Optional if adding an image."
                 />
                 <label className="mt-3 block text-sm font-medium text-slate-700">
-                  Optional images (up to {maxMealPhotos})
+                  Meal photos
+                  <span className="mt-1 block text-xs font-normal leading-5 text-slate-500">
+                    Take or choose photos one at a time. Each new selection is
+                    added to this meal.
+                  </span>
                   <input
                     accept="image/*"
-                    className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm"
+                    className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm disabled:opacity-50"
+                    disabled={mealPhotos.length >= maxMealPhotos}
                     multiple
-                    name="photos"
+                    onChange={addMealPhotos}
                     type="file"
                   />
                 </label>
+                {mealPhotos.length > 0 ? (
+                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-slate-700">
+                        {mealPhotos.length} of {maxMealPhotos}{" "}
+                        {mealPhotos.length === 1 ? "photo" : "photos"} added
+                      </p>
+                      <button
+                        className="text-xs font-semibold text-red-600"
+                        onClick={clearMealPhotos}
+                        type="button"
+                      >
+                        Remove all
+                      </button>
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-2">
+                      {mealPhotos.map((photo, index) => (
+                        <div
+                          className="relative aspect-square overflow-hidden rounded-xl bg-slate-200"
+                          key={photo.id}
+                        >
+                          <div
+                            aria-label={`Selected meal photo ${index + 1}`}
+                            className="h-full w-full bg-cover bg-center"
+                            role="img"
+                            style={{ backgroundImage: `url("${photo.previewUrl}")` }}
+                          />
+                          <button
+                            aria-label={`Remove selected meal photo ${index + 1}`}
+                            className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-slate-950/75 text-lg leading-none text-white shadow-sm"
+                            onClick={() => removeMealPhoto(photo.id)}
+                            type="button"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
                 <button
                   className="mt-3 w-full rounded-full bg-emerald-500 px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
                   disabled={mealPending}
