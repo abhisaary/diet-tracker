@@ -1311,7 +1311,6 @@ export default function Home() {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
         headers: {
-          Authorization: `Bearer ${session.access_token}`,
           "Content-Type": "application/json",
         },
         method: "PATCH",
@@ -1497,6 +1496,7 @@ export default function Home() {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
         headers: {
+          Authorization: `Bearer ${session.access_token}`,
           "Content-Type": "application/json",
         },
         method: "POST",
