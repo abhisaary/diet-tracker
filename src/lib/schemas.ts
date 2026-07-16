@@ -19,6 +19,11 @@ const ingredientEstimateSchema = z.object({
   name: z.string(),
 });
 
+export const mealPhotoSchema = z.object({
+  fileId: z.string(),
+  fileName: z.string().optional(),
+});
+
 const ingredientMacroEstimateSchema = ingredientEstimateSchema.extend({
   calories: z.number().nonnegative(),
   proteinGrams: z.number().nonnegative(),
@@ -70,6 +75,7 @@ export const mealRecordSchema = z.object({
   createdAt: z.string().datetime(),
   description: z.string(),
   restaurantLink: z.string().url().optional(),
+  photos: z.array(mealPhotoSchema).default([]),
   photoFileId: z.string().optional(),
   photoFileName: z.string().optional(),
   nutrition: nutritionEstimateSchema,

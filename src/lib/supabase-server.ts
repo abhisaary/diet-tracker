@@ -18,6 +18,8 @@ type MealRow = {
   restaurant_link: string | null;
   photo_path: string | null;
   photo_file_name: string | null;
+  photo_paths?: string[] | null;
+  photo_file_names?: string[] | null;
   nutrition: unknown;
   corrected_nutrition: unknown | null;
   correction_note: string | null;
@@ -43,6 +45,18 @@ const mealPhotosBucket = "meal-photos";
 
 function toIsoString(value: string) {
   return new Date(value).toISOString();
+}
+
+function getMealPhotoMimeType(fileName?: string) {
+  if (fileName?.toLowerCase().endsWith(".png")) {
+    return "image/png";
+  }
+
+  if (fileName?.toLowerCase().endsWith(".webp")) {
+    return "image/webp";
+  }
+
+  return "image/jpeg";
 }
 
 export function createServerSupabaseClient(accessToken?: string) {
@@ -107,6 +121,23 @@ export async function getAuthenticatedSupabase(
 }
 
 function toMealRecord(row: MealRow): MealRecord {
+  const paths =
+    row.photo_paths?.length
+      ? row.photo_paths
+      : row.photo_path
+        ? [row.photo_path]
+        : [];
+  const fileNames =
+    row.photo_file_names?.length
+      ? row.photo_file_names
+      : row.photo_file_name
+        ? [row.photo_file_name]
+        : [];
+  const photos = paths.map((fileId, index) => ({
+    fileId,
+    fileName: fileNames[index] || (index === 0 ? row.photo_file_name ?? undefined : undefined),
+  }));
+
   return mealRecordSchema.parse({
     correctedNutrition: row.corrected_nutrition
       ? macroSchema.parse(row.corrected_nutrition)
@@ -117,8 +148,9 @@ function toMealRecord(row: MealRow): MealRecord {
     eatenAt: toIsoString(row.eaten_at),
     id: row.id,
     nutrition: nutritionEstimateSchema.parse(row.nutrition),
-    photoFileId: row.photo_path ?? undefined,
-    photoFileName: row.photo_file_name ?? undefined,
+    photos,
+    photoFileId: photos[0]?.fileId,
+    photoFileName: photos[0]?.fileName,
     restaurantLink: row.restaurant_link ?? undefined,
     type: "meal",
   });
@@ -188,6 +220,18 @@ export async function downloadMealPhoto(
   return Buffer.from(await data.arrayBuffer());
 }
 
+export async function downloadMealPhotos(
+  supabase: SupabaseClient,
+  photos: MealRecord["photos"],
+) {
+  return Promise.all(
+    photos.map(async (photo) => ({
+      bytes: await downloadMealPhoto(supabase, photo.fileId),
+      mimeType: getMealPhotoMimeType(photo.fileName),
+    })),
+  );
+}
+
 export async function listSymptoms(
   supabase: SupabaseClient,
   userId: string,
@@ -235,6 +279,57 @@ export async function uploadMealPhoto({
   return path;
 }
 
+export async function removeMealPhotos(
+  supabase: SupabaseClient,
+  paths: string[],
+) {
+  if (!paths.length) {
+    return;
+  }
+
+  const { error } = await supabase.storage.from(mealPhotosBucket).remove(paths);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
+export async function uploadMealPhotos({
+  pathDate,
+  photos,
+  supabase,
+  userId,
+}: {
+  pathDate: string;
+  photos: { bytes: Buffer; fileName: string; mimeType: string }[];
+  supabase: SupabaseClient;
+  userId: string;
+}) {
+  const uploadedPhotos: { fileId: string; fileName: string }[] = [];
+
+  try {
+    for (const photo of photos) {
+      const fileId = await uploadMealPhoto({
+        bytes: photo.bytes,
+        fileName: photo.fileName,
+        mimeType: photo.mimeType,
+        pathDate,
+        supabase,
+        userId,
+      });
+      uploadedPhotos.push({ fileId, fileName: photo.fileName });
+    }
+  } catch (error) {
+    await removeMealPhotos(
+      supabase,
+      uploadedPhotos.map((photo) => photo.fileId),
+    ).catch(() => undefined);
+    throw error;
+  }
+
+  return uploadedPhotos;
+}
+
 export async function insertMeal({
   correctedNutrition,
   correctionNote,
@@ -242,8 +337,7 @@ export async function insertMeal({
   eatenAt,
   id,
   nutrition,
-  photoFileName,
-  photoPath,
+  photos = [],
   restaurantLink,
   supabase,
   userId,
@@ -254,8 +348,7 @@ export async function insertMeal({
   eatenAt: string;
   id: string;
   nutrition: NutritionEstimate;
-  photoFileName?: string;
-  photoPath?: string;
+  photos?: { fileId: string; fileName: string }[];
   restaurantLink?: string;
   supabase: SupabaseClient;
   userId: string;
@@ -269,8 +362,10 @@ export async function insertMeal({
       eaten_at: eatenAt,
       id,
       nutrition,
-      photo_file_name: photoFileName ?? null,
-      photo_path: photoPath ?? null,
+      photo_file_name: photos[0]?.fileName ?? null,
+      photo_file_names: photos.map((photo) => photo.fileName),
+      photo_path: photos[0]?.fileId ?? null,
+      photo_paths: photos.map((photo) => photo.fileId),
       restaurant_link: restaurantLink ?? null,
       user_id: userId,
     })
@@ -405,9 +500,10 @@ export async function deleteMeal({
     throw new Error("Meal was not deleted. Check the Supabase delete policy.");
   }
 
-  if (existingMeal.photoFileId) {
-    await supabase.storage.from(mealPhotosBucket).remove([existingMeal.photoFileId]);
-  }
+  await removeMealPhotos(
+    supabase,
+    existingMeal.photos.map((photo) => photo.fileId),
+  ).catch(() => undefined);
 }
 
 export async function insertSymptom({

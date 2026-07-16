@@ -1,7 +1,7 @@
 # Diet Tracker
 
 A personal, single-user meal and gut symptom tracker. The web UI is designed for
-both phone and Mac use: log a meal photo plus quick description, let OpenAI
+both phone and Mac use: log meal photos plus a quick description, let OpenAI
 vision estimate rough macros, and save meal, symptom, and nutrition records to
 Supabase.
 
@@ -21,6 +21,10 @@ In the Supabase SQL editor, run `supabase/schema.sql`. This creates:
 - `symptoms` table
 - private `meal-photos` storage bucket
 - row-level security policies for signed-in users
+
+For an existing project, also run new SQL files in `supabase/migrations` in
+filename order. The multi-photo migration preserves existing single-photo meal
+records.
 
 3. Configure Supabase Auth.
 
@@ -56,11 +60,13 @@ npm run dev
 
 Supabase is the source of truth:
 
-- `meals`: meal descriptions, timestamps, photo paths, nutrition estimates,
-  assumptions, and optional correction fields.
+- `meals`: meal descriptions, timestamps, ordered photo path arrays, nutrition
+  estimates, assumptions, and optional correction fields. Legacy single-photo
+  columns remain populated for compatibility.
 - `symptoms`: independent timestamped symptom notes with severity, tags, and
   optional duration.
-- `meal-photos`: private storage bucket for uploaded meal photos.
+- `meal-photos`: private storage bucket for uploaded meal photos. A meal can
+  include up to six photos, all of which are used for nutrition estimation.
 
 OpenAI estimates are intentionally stored as estimates with confidence,
 assumptions, portion notes, notable ingredients, and broad possible trigger

@@ -104,6 +104,8 @@ const defaultUserProfile: UserProfile = {
   activityLevel: "general",
 };
 
+const maxMealPhotos = 6;
+
 const proteinReferences: Record<
   ActivityLevel,
   { label: string; maxGramsPerKg: number; minGramsPerKg: number }
@@ -1304,13 +1306,22 @@ export default function Home() {
       const form = event.currentTarget;
       const formData = new FormData(form);
       const description = String(formData.get("description") ?? "").trim();
-      const photo = formData.get("photo");
-      const hasPhoto = photo instanceof File && photo.size > 0;
+      const photos = formData
+        .getAll("photos")
+        .filter((value): value is File => value instanceof File && value.size > 0);
 
-      if (!description && !hasPhoto) {
+      if (!description && !photos.length) {
         showMessage({
           kind: "error",
           text: "Add a meal note or image before saving.",
+        });
+        return;
+      }
+
+      if (photos.length > maxMealPhotos) {
+        showMessage({
+          kind: "error",
+          text: `Add no more than ${maxMealPhotos} images per meal.`,
         });
         return;
       }
@@ -2267,11 +2278,12 @@ export default function Home() {
                   placeholder="What did you eat? Optional if adding an image."
                 />
                 <label className="mt-3 block text-sm font-medium text-slate-700">
-                  Optional image
+                  Optional images (up to {maxMealPhotos})
                   <input
                     accept="image/*"
                     className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm"
-                    name="photo"
+                    multiple
+                    name="photos"
                     type="file"
                   />
                 </label>

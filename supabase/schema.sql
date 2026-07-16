@@ -9,6 +9,8 @@ create table if not exists public.meals (
   restaurant_link text,
   photo_path text,
   photo_file_name text,
+  photo_paths text[] not null default '{}',
+  photo_file_names text[] not null default '{}',
   nutrition jsonb not null,
   corrected_nutrition jsonb,
   correction_note text

@@ -5,17 +5,20 @@ import type { MealRecord } from "@/lib/schemas";
 import { mealInputSchema, trackedNutrientSchema } from "@/lib/schemas";
 import {
   deleteMeal,
-  downloadMealPhoto,
+  downloadMealPhotos,
   getAuthenticatedSupabase,
   getMeal,
   insertMeal,
   listMeals,
+  removeMealPhotos,
   replaceMealNutrition,
-  uploadMealPhoto,
+  uploadMealPhotos,
 } from "@/lib/supabase-server";
 import { z } from "zod";
 
 export const runtime = "nodejs";
+
+const maxMealPhotos = 6;
 
 function getFileExtension(fileName: string, mimeType: string) {
   const fromName = fileName.split(".").pop();
@@ -37,18 +40,6 @@ function getFileExtension(fileName: string, mimeType: string) {
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
-}
-
-function getMimeType(fileName?: string) {
-  if (fileName?.toLowerCase().endsWith(".png")) {
-    return "image/png";
-  }
-
-  if (fileName?.toLowerCase().endsWith(".webp")) {
-    return "image/webp";
-  }
-
-  return "image/jpeg";
 }
 
 function needsCardBackfill(meal: Awaited<ReturnType<typeof listMeals>>[number]) {
@@ -148,13 +139,10 @@ export async function GET(request: Request) {
     const missingCardData = meals.filter(needsCardBackfill);
 
     for (const meal of missingCardData) {
-      const imageBytes = meal.photoFileId
-        ? await downloadMealPhoto(auth.supabase, meal.photoFileId)
-        : undefined;
+      const images = await downloadMealPhotos(auth.supabase, meal.photos);
       const nutrition = await estimateMealNutrition({
         description: meal.description,
-        imageBytes,
-        mimeType: imageBytes ? getMimeType(meal.photoFileName) : undefined,
+        images,
         restaurantLink: meal.restaurantLink,
         submittedAt: meal.createdAt,
       });
@@ -183,8 +171,17 @@ export async function POST(request: Request) {
   }
 
   const formData = await request.formData();
-  const photo = formData.get("photo");
-  const hasPhoto = photo instanceof File && photo.size > 0;
+  const photos = [...formData.getAll("photos"), ...formData.getAll("photo")].filter(
+    (value): value is File => value instanceof File && value.size > 0,
+  );
+
+  if (photos.length > maxMealPhotos) {
+    return jsonError(`Add no more than ${maxMealPhotos} images per meal.`);
+  }
+
+  if (photos.some((photo) => photo.type && !photo.type.startsWith("image/"))) {
+    return jsonError("Meal uploads must be image files.");
+  }
 
   const input = mealInputSchema.safeParse({
     description: formData.get("description") || undefined,
@@ -198,18 +195,23 @@ export async function POST(request: Request) {
 
   const description = input.data.description ?? "";
 
-  if (!description && !hasPhoto) {
+  if (!description && !photos.length) {
     return jsonError("Add a meal note or image before saving.");
   }
 
   const id = crypto.randomUUID();
   const submittedAt = new Date().toISOString();
-  const imageBytes = hasPhoto
-    ? Buffer.from(await photo.arrayBuffer())
-    : undefined;
-  const mimeType = hasPhoto ? photo.type || "image/jpeg" : undefined;
-  const photoFileName =
-    hasPhoto && mimeType ? `${id}.${getFileExtension(photo.name, mimeType)}` : undefined;
+  const pendingPhotos = await Promise.all(
+    photos.map(async (photo, index) => {
+      const mimeType = photo.type || "image/jpeg";
+
+      return {
+        bytes: Buffer.from(await photo.arrayBuffer()),
+        fileName: `${id}-${index + 1}.${getFileExtension(photo.name, mimeType)}`,
+        mimeType,
+      };
+    }),
+  );
   const recentMealContext = formatRecentMealContext(
     await listMeals(auth.supabase, auth.user.id),
   );
@@ -218,8 +220,7 @@ export async function POST(request: Request) {
   );
   const nutrition = await estimateMealNutrition({
     description,
-    imageBytes,
-    mimeType,
+    images: pendingPhotos.map(({ bytes, mimeType }) => ({ bytes, mimeType })),
     recentMealContext,
     restaurantLink: input.data.restaurantLink,
     submittedAt,
@@ -231,28 +232,32 @@ export async function POST(request: Request) {
   });
   const eatenAt = nutrition.inferredMealTime ?? input.data.eatenAt ?? submittedAt;
   const datePath = eatenAt.slice(0, 10);
-  const photoPath =
-    imageBytes && mimeType && photoFileName
-      ? await uploadMealPhoto({
-          bytes: imageBytes,
-          fileName: photoFileName,
-          mimeType,
-          pathDate: datePath,
-          supabase: auth.supabase,
-          userId: auth.user.id,
-        })
-      : undefined;
-  const meal = await insertMeal({
-    description: description || nutrition.cleanedDescription || "Image-only meal",
-    eatenAt,
-    id,
-    nutrition,
-    photoFileName,
-    photoPath,
-    restaurantLink: input.data.restaurantLink,
+  const uploadedPhotos = await uploadMealPhotos({
+    pathDate: datePath,
+    photos: pendingPhotos,
     supabase: auth.supabase,
     userId: auth.user.id,
   });
+  let meal: MealRecord;
+
+  try {
+    meal = await insertMeal({
+      description: description || nutrition.cleanedDescription || "Image-only meal",
+      eatenAt,
+      id,
+      nutrition,
+      photos: uploadedPhotos,
+      restaurantLink: input.data.restaurantLink,
+      supabase: auth.supabase,
+      userId: auth.user.id,
+    });
+  } catch (error) {
+    await removeMealPhotos(
+      auth.supabase,
+      uploadedPhotos.map((photo) => photo.fileId),
+    ).catch(() => undefined);
+    throw error;
+  }
 
   return NextResponse.json({ meal }, { status: 201 });
 }
@@ -271,13 +276,10 @@ export async function PATCH(request: Request) {
   }
 
   const existingMeal = await getMeal(auth.supabase, auth.user.id, input.data.id);
-  const imageBytes = existingMeal.photoFileId
-    ? await downloadMealPhoto(auth.supabase, existingMeal.photoFileId)
-    : undefined;
+  const images = await downloadMealPhotos(auth.supabase, existingMeal.photos);
   const nutrition = await estimateMealNutrition({
     description: formatMealForCorrection(existingMeal, input.data.correction),
-    imageBytes,
-    mimeType: imageBytes ? getMimeType(existingMeal.photoFileName) : undefined,
+    images,
     restaurantLink: existingMeal.restaurantLink,
     submittedAt: existingMeal.createdAt,
     timezone: input.data.timezone,

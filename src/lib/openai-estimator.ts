@@ -180,8 +180,7 @@ const estimateJsonSchema = {
 
 export async function estimateMealNutrition({
   description,
-  imageBytes,
-  mimeType,
+  images = [],
   recentMealContext,
   restaurantLink,
   submittedAt,
@@ -189,8 +188,7 @@ export async function estimateMealNutrition({
   trackedNutrients,
 }: {
   description: string;
-  imageBytes?: Buffer;
-  mimeType?: string;
+  images?: { bytes: Buffer; mimeType: string }[];
   recentMealContext?: string;
   restaurantLink?: string;
   submittedAt?: string;
@@ -202,11 +200,11 @@ export async function estimateMealNutrition({
   const submittedAtIso = submittedAt ?? new Date().toISOString();
   const prompt = [
     "Estimate nutrition for a personal diet and gut-symptom tracker.",
-    imageBytes
-      ? "Use the image and user description as evidence."
-      : "Use the user description as evidence. No meal image was provided.",
+    images.length
+      ? "Use all meal images and the user description as evidence. Treat the images as different views or components of the same meal, and do not count an item twice when it appears in more than one image."
+      : "Use the user description as evidence. No meal images were provided.",
     "The goal is rough trend tracking, not gram-perfect diet logging.",
-    "Use this workflow before returning JSON: first estimate a complete ingredient list and portion size for each ingredient from the image, description, and any menu context; then calculate each ingredient's macro contribution from typical nutrition data; then sum those contributions into the top-level calories/protein/carbs/fat/fiber; finally sanity-check whether the total seems plausible for the visible meal size and restaurant/home context.",
+    "Use this workflow before returning JSON: first estimate a complete ingredient list and portion size for each ingredient from the images, description, and any menu context; then calculate each ingredient's macro contribution from typical nutrition data; then sum those contributions into the top-level calories/protein/carbs/fat/fiber; finally sanity-check whether the total seems plausible for the visible meal size and restaurant/home context.",
     "If the description names a restaurant, brand, or specific menu item and the user has not already listed the ingredients, use web search to find the menu item or closest official/order-page description before estimating. Prefer official restaurant pages and major ordering pages over generic nutrition guesses.",
     "Return mealTitle as a short display title, like 'Tofu Sisig Burrito' or 'Greek Yogurt Bowl'.",
     "Return cleanedDescription as a concise normalized meal description suitable for a meal log.",
@@ -220,7 +218,7 @@ export async function estimateMealNutrition({
     "Return calculationSummary as a concise one-sentence explanation of the ingredient-sum calculation. Return sanityCheck as one concise sentence noting whether the total looks plausible or what could swing it.",
     "Do not include hidden step-by-step reasoning; store only concise estimates, assumptions, calculationSummary, sanityCheck, and per-ingredient macroBasis.",
     recentMealContext
-      ? "Recent meal context is provided below. Use it only when the user's description clearly refers to a prior meal, such as 'same salad as yesterday', 'the usual breakfast', or 'same as last night'. If the current photo or description conflicts with prior context, prefer the current photo/description. If you reuse prior context, mention the referenced meal in assumptions."
+      ? "Recent meal context is provided below. Use it only when the user's description clearly refers to a prior meal, such as 'same salad as yesterday', 'the usual breakfast', or 'same as last night'. If the current images or description conflict with prior context, prefer the current images/description. If you reuse prior context, mention the referenced meal in assumptions."
       : "",
     "If the description clearly states or implies when the meal was eaten, return inferredMealTime as a UTC ISO 8601 timestamp ending in Z. Otherwise return null.",
     `The submission time is ${submittedAtIso}.`,
@@ -239,8 +237,8 @@ export async function estimateMealNutrition({
     | { detail: "high"; image_url: string; type: "input_image" }
   )[] = [{ text: prompt, type: "input_text" }];
 
-  if (imageBytes && mimeType) {
-    const imageDataUrl = `data:${mimeType};base64,${imageBytes.toString("base64")}`;
+  for (const image of images) {
+    const imageDataUrl = `data:${image.mimeType};base64,${image.bytes.toString("base64")}`;
     content.push({
       detail: "high",
       image_url: imageDataUrl,
