@@ -37,6 +37,10 @@ type MealPhotoDraft = {
   id: string;
   previewUrl: string;
 };
+type UploadedMealPhoto = {
+  fileId: string;
+  fileName: string;
+};
 type MacroCalorieKey = "carbsGrams" | "fatGrams" | "proteinGrams";
 type ActivityLevel = "general" | "very_active";
 type SexForEstimate = "female" | "male";
@@ -117,7 +121,30 @@ const defaultUserProfile: UserProfile = {
   activityLevel: "general",
 };
 
+const mealPhotosBucket = "meal-photos";
 const maxMealPhotos = 6;
+
+function getPhotoFileExtension(file: File) {
+  const fromName = file.name.split(".").pop()?.toLowerCase();
+
+  if (fromName && fromName !== file.name && /^[a-z0-9]+$/.test(fromName)) {
+    return fromName;
+  }
+
+  if (file.type === "image/png") {
+    return "png";
+  }
+
+  if (file.type === "image/webp") {
+    return "webp";
+  }
+
+  if (file.type === "image/gif") {
+    return "gif";
+  }
+
+  return "jpg";
+}
 
 const proteinReferences: Record<
   ActivityLevel,
@@ -1049,11 +1076,54 @@ export default function Home() {
   async function authenticatedFetch(input: RequestInfo, init: RequestInit = {}) {
     const headers = new Headers(init.headers);
 
-    if (accessToken) {
+    if (accessToken && !headers.has("Authorization")) {
       headers.set("Authorization", `Bearer ${accessToken}`);
     }
 
     return fetch(input, { ...init, headers });
+  }
+
+  async function removeUploadedMealPhotos(photos: UploadedMealPhoto[]) {
+    if (!photos.length) {
+      return;
+    }
+
+    await supabase.storage
+      .from(mealPhotosBucket)
+      .remove(photos.map((photo) => photo.fileId));
+  }
+
+  async function uploadMealPhotosToStorage(
+    photos: File[],
+    userId: string,
+  ): Promise<UploadedMealPhoto[]> {
+    const uploadId = crypto.randomUUID();
+    const pathDate = new Date().toISOString().slice(0, 10);
+    const uploadedPhotos: UploadedMealPhoto[] = [];
+
+    try {
+      for (const [index, photo] of photos.entries()) {
+        const fileName = `${uploadId}-${index + 1}.${getPhotoFileExtension(photo)}`;
+        const fileId = `${userId}/${pathDate}/${fileName}`;
+        const { error } = await supabase.storage
+          .from(mealPhotosBucket)
+          .upload(fileId, photo, {
+            contentType: photo.type || "image/jpeg",
+            upsert: false,
+          });
+
+        if (error) {
+          throw error;
+        }
+
+        uploadedPhotos.push({ fileId, fileName });
+      }
+    } catch (error) {
+      await removeUploadedMealPhotos(uploadedPhotos);
+      throw error;
+    }
+
+    return uploadedPhotos;
   }
 
   async function saveUserSettings() {
@@ -1241,6 +1311,7 @@ export default function Home() {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
         headers: {
+          Authorization: `Bearer ${session.access_token}`,
           "Content-Type": "application/json",
         },
         method: "PATCH",
@@ -1378,8 +1449,6 @@ export default function Home() {
       const description = String(formData.get("description") ?? "").trim();
       const photos = mealPhotosRef.current.map((photo) => photo.file);
 
-      photos.forEach((photo) => formData.append("photos", photo, photo.name));
-
       if (!description && !photos.length) {
         showMessage({
           kind: "error",
@@ -1409,17 +1478,33 @@ export default function Home() {
       form.reset();
       clearMealPhotos();
       setActiveForm(null);
-      formData.set(
-        "timezone",
-        Intl.DateTimeFormat().resolvedOptions().timeZone,
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        throw new Error("Sign in before logging a meal.");
+      }
+
+      const uploadedPhotos = await uploadMealPhotosToStorage(
+        photos,
+        session.user.id,
       );
       const response = await authenticatedFetch("/api/meals", {
-        body: formData,
+        body: JSON.stringify({
+          description,
+          photos: uploadedPhotos,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }),
+        headers: {
+          "Content-Type": "application/json",
+        },
         method: "POST",
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
+        await removeUploadedMealPhotos(uploadedPhotos);
         throw new Error(data.error ?? "Could not log meal.");
       }
 
@@ -1743,7 +1828,11 @@ export default function Home() {
                 : ""}
             </p>
             {renderProcessingPill(
-              isError ? "Could not estimate meal" : "Estimating nutrition...",
+              isError
+                ? "Could not estimate meal"
+                : meal.photoCount > 0
+                  ? "Uploading photos and estimating..."
+                  : "Estimating nutrition...",
               isError,
             )}
           </div>

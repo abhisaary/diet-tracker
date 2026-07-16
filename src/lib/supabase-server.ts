@@ -56,6 +56,10 @@ function getMealPhotoMimeType(fileName?: string) {
     return "image/webp";
   }
 
+  if (fileName?.toLowerCase().endsWith(".gif")) {
+    return "image/gif";
+  }
+
   return "image/jpeg";
 }
 

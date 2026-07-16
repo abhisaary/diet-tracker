@@ -67,6 +67,9 @@ Supabase is the source of truth:
   optional duration.
 - `meal-photos`: private storage bucket for uploaded meal photos. A meal can
   include up to six photos, all of which are used for nutrition estimation.
+  Authenticated browsers upload the original files directly to this bucket;
+  the meal API receives only their private storage paths, avoiding serverless
+  request-size limits.
 
 OpenAI estimates are intentionally stored as estimates with confidence,
 assumptions, portion notes, notable ingredients, and broad possible trigger

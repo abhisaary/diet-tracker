@@ -124,6 +124,24 @@ const mealDeleteSchema = z.object({
   id: z.string().uuid(),
 });
 
+const uploadedMealInputSchema = mealInputSchema.extend({
+  photos: z
+    .array(
+      z.object({
+        fileId: z.string().trim().min(1).max(1024),
+        fileName: z
+          .string()
+          .trim()
+          .min(1)
+          .max(255)
+          .refine((fileName) => !fileName.includes("/"), "Invalid photo name."),
+      }),
+    )
+    .max(maxMealPhotos)
+    .default([]),
+  timezone: z.string().optional(),
+});
+
 export async function GET(request: Request) {
   const auth = await getAuthenticatedSupabase(request);
 
@@ -168,6 +186,71 @@ export async function POST(request: Request) {
 
   if (!auth) {
     return jsonError("Sign in before logging a meal.", 401);
+  }
+
+  if (request.headers.get("content-type")?.includes("application/json")) {
+    const input = uploadedMealInputSchema.safeParse(await request.json());
+
+    if (!input.success) {
+      return jsonError(input.error.issues[0]?.message ?? "Invalid meal input.");
+    }
+
+    const description = input.data.description ?? "";
+    const uploadedPhotos = input.data.photos;
+
+    if (!description && !uploadedPhotos.length) {
+      return jsonError("Add a meal note or image before saving.");
+    }
+
+    if (
+      uploadedPhotos.some(
+        (photo) => !photo.fileId.startsWith(`${auth.user.id}/`),
+      )
+    ) {
+      return jsonError("A meal photo does not belong to this user.", 403);
+    }
+
+    const submittedAt = new Date().toISOString();
+    let meal: MealRecord;
+
+    try {
+      const images = await downloadMealPhotos(auth.supabase, uploadedPhotos);
+      const nutrition = await estimateMealNutrition({
+        description,
+        images,
+        recentMealContext: formatRecentMealContext(
+          await listMeals(auth.supabase, auth.user.id),
+        ),
+        restaurantLink: input.data.restaurantLink,
+        submittedAt,
+        timezone: input.data.timezone,
+        trackedNutrients: getTrackedNutrients(
+          auth.user.user_metadata?.trackedNutrients,
+        ),
+      });
+      const eatenAt =
+        nutrition.inferredMealTime ?? input.data.eatenAt ?? submittedAt;
+
+      meal = await insertMeal({
+        description:
+          description || nutrition.cleanedDescription || "Image-only meal",
+        eatenAt,
+        id: crypto.randomUUID(),
+        nutrition,
+        photos: uploadedPhotos,
+        restaurantLink: input.data.restaurantLink,
+        supabase: auth.supabase,
+        userId: auth.user.id,
+      });
+    } catch (error) {
+      await removeMealPhotos(
+        auth.supabase,
+        uploadedPhotos.map((photo) => photo.fileId),
+      ).catch(() => undefined);
+      throw error;
+    }
+
+    return NextResponse.json({ meal }, { status: 201 });
   }
 
   const formData = await request.formData();
