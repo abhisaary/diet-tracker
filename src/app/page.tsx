@@ -41,6 +41,10 @@ type UploadedMealPhoto = {
   fileId: string;
   fileName: string;
 };
+type UploadedMealPhotosResult = {
+  photos: UploadedMealPhoto[];
+  uploadDurationsMs: number[];
+};
 type PlantVariety = NonNullable<
   MealRecord["nutrition"]["plantVarieties"]
 >[number];
@@ -129,6 +133,42 @@ const defaultUserProfile: UserProfile = {
 
 const mealPhotosBucket = "meal-photos";
 const maxMealPhotos = 6;
+
+function roundMilliseconds(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function logClientMealLatency({
+  metadata,
+  operation,
+  outcome,
+  stages,
+  totalMs,
+}: {
+  metadata: Record<string, number | number[] | string | null>;
+  operation: "create" | "edit";
+  outcome: "error" | "success";
+  stages: Record<string, number | number[]>;
+  totalMs: number;
+}) {
+  console.info(
+    "[meal-latency]",
+    JSON.stringify({
+      metadata,
+      operation,
+      outcome,
+      source: "client",
+      stages,
+      totalMs,
+    }),
+  );
+}
+
+function waitForNextPaint() {
+  return new Promise<void>((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
+}
 
 function getPhotoFileExtension(file: File) {
   const fromName = file.name.split(".").pop()?.toLowerCase();
@@ -1206,13 +1246,15 @@ export default function Home() {
   async function uploadMealPhotosToStorage(
     photos: File[],
     userId: string,
-  ): Promise<UploadedMealPhoto[]> {
+  ): Promise<UploadedMealPhotosResult> {
     const uploadId = crypto.randomUUID();
     const pathDate = new Date().toISOString().slice(0, 10);
     const uploadedPhotos: UploadedMealPhoto[] = [];
+    const uploadDurationsMs: number[] = [];
 
     try {
       for (const [index, photo] of photos.entries()) {
+        const uploadStartedAt = performance.now();
         const fileName = `${uploadId}-${index + 1}.${getPhotoFileExtension(photo)}`;
         const fileId = `${userId}/${pathDate}/${fileName}`;
         const { error } = await supabase.storage
@@ -1227,13 +1269,19 @@ export default function Home() {
         }
 
         uploadedPhotos.push({ fileId, fileName });
+        uploadDurationsMs.push(
+          roundMilliseconds(performance.now() - uploadStartedAt),
+        );
       }
     } catch (error) {
       await removeUploadedMealPhotos(uploadedPhotos);
       throw error;
     }
 
-    return uploadedPhotos;
+    return {
+      photos: uploadedPhotos,
+      uploadDurationsMs,
+    };
   }
 
   async function saveUserSettings() {
@@ -1474,10 +1522,17 @@ export default function Home() {
       return;
     }
 
+    const latencyStartedAt = performance.now();
+    const latencyStages: Record<string, number | number[]> = {};
+    const latencyMetadata: Record<string, number | number[] | string | null> = {
+      requestId: null,
+      serverTiming: null,
+    };
     setSavingMealId(mealId);
     setMessage(null);
 
     try {
+      const apiStartedAt = performance.now();
       const response = await authenticatedFetch("/api/meals", {
         body: JSON.stringify({
           correction,
@@ -1489,17 +1544,50 @@ export default function Home() {
         },
         method: "PATCH",
       });
+      latencyStages.apiRequestMs = roundMilliseconds(
+        performance.now() - apiStartedAt,
+      );
+      latencyMetadata.requestId =
+        response.headers.get("X-Meal-Request-Id");
+      latencyMetadata.serverTiming = response.headers.get("Server-Timing");
+      const responseParseStartedAt = performance.now();
       const data = await response.json();
+      latencyStages.responseParseMs = roundMilliseconds(
+        performance.now() - responseParseStartedAt,
+      );
 
       if (!response.ok) {
         throw new Error(data.error ?? "Could not update meal.");
       }
 
+      const refreshStartedAt = performance.now();
       await loadMeals();
+      latencyStages.refreshMs = roundMilliseconds(
+        performance.now() - refreshStartedAt,
+      );
       setEditingMealId(null);
       updateMealCorrection(mealId, "");
+      const paintStartedAt = performance.now();
+      await waitForNextPaint();
+      latencyStages.paintMs = roundMilliseconds(
+        performance.now() - paintStartedAt,
+      );
+      logClientMealLatency({
+        metadata: latencyMetadata,
+        operation: "edit",
+        outcome: "success",
+        stages: latencyStages,
+        totalMs: roundMilliseconds(performance.now() - latencyStartedAt),
+      });
       showMessage({ kind: "success", text: "Correction applied." });
     } catch (error) {
+      logClientMealLatency({
+        metadata: latencyMetadata,
+        operation: "edit",
+        outcome: "error",
+        stages: latencyStages,
+        totalMs: roundMilliseconds(performance.now() - latencyStartedAt),
+      });
       showMessage({
         kind: "error",
         text: error instanceof Error ? error.message : "Could not update meal.",
@@ -1612,6 +1700,13 @@ export default function Home() {
 
   async function submitMeal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const latencyStartedAt = performance.now();
+    const latencyStages: Record<string, number | number[]> = {};
+    const latencyMetadata: Record<string, number | number[] | string | null> = {
+      requestId: null,
+      serverTiming: null,
+    };
+    let latencyLogged = false;
     setMealPending(true);
     setMessage(null);
     let pendingMealId: string | null = null;
@@ -1621,6 +1716,11 @@ export default function Home() {
       const formData = new FormData(form);
       const description = String(formData.get("description") ?? "").trim();
       const photos = mealPhotosRef.current.map((photo) => photo.file);
+      latencyMetadata.photoBytes = photos.reduce(
+        (total, photo) => total + photo.size,
+        0,
+      );
+      latencyMetadata.photoCount = photos.length;
 
       if (!description && !photos.length) {
         showMessage({
@@ -1652,16 +1752,33 @@ export default function Home() {
       setActiveForm(null);
       const {
         data: { session },
-      } = await supabase.auth.getSession();
+      } = await (async () => {
+        const sessionStartedAt = performance.now();
+
+        try {
+          return await supabase.auth.getSession();
+        } finally {
+          latencyStages.sessionMs = roundMilliseconds(
+            performance.now() - sessionStartedAt,
+          );
+        }
+      })();
 
       if (!session) {
         throw new Error("Sign in before logging a meal.");
       }
 
-      const uploadedPhotos = await uploadMealPhotosToStorage(
+      const uploadStartedAt = performance.now();
+      const uploadResult = await uploadMealPhotosToStorage(
         photos,
         session.user.id,
       );
+      latencyStages.photoUploadMs = roundMilliseconds(
+        performance.now() - uploadStartedAt,
+      );
+      latencyStages.photoUploadsMs = uploadResult.uploadDurationsMs;
+      const uploadedPhotos = uploadResult.photos;
+      const apiStartedAt = performance.now();
       const response = await authenticatedFetch("/api/meals", {
         body: JSON.stringify({
           description,
@@ -1674,19 +1791,60 @@ export default function Home() {
         },
         method: "POST",
       });
+      latencyStages.apiRequestMs = roundMilliseconds(
+        performance.now() - apiStartedAt,
+      );
+      latencyMetadata.requestId =
+        response.headers.get("X-Meal-Request-Id");
+      latencyMetadata.serverTiming = response.headers.get("Server-Timing");
+      const responseParseStartedAt = performance.now();
       const data = await response.json().catch(() => ({}));
+      latencyStages.responseParseMs = roundMilliseconds(
+        performance.now() - responseParseStartedAt,
+      );
 
       if (!response.ok) {
+        const cleanupStartedAt = performance.now();
         await removeUploadedMealPhotos(uploadedPhotos);
+        latencyStages.photoCleanupMs = roundMilliseconds(
+          performance.now() - cleanupStartedAt,
+        );
         throw new Error(data.error ?? "Could not log meal.");
       }
 
       setPendingMealSubmissions((current) =>
         current.filter((meal) => meal.id !== pendingMealId),
       );
+      const refreshStartedAt = performance.now();
       await loadMeals();
+      latencyStages.refreshMs = roundMilliseconds(
+        performance.now() - refreshStartedAt,
+      );
+      const paintStartedAt = performance.now();
+      await waitForNextPaint();
+      latencyStages.paintMs = roundMilliseconds(
+        performance.now() - paintStartedAt,
+      );
+      logClientMealLatency({
+        metadata: latencyMetadata,
+        operation: "create",
+        outcome: "success",
+        stages: latencyStages,
+        totalMs: roundMilliseconds(performance.now() - latencyStartedAt),
+      });
+      latencyLogged = true;
       showMessage({ kind: "success", text: "Meal saved." });
     } catch (error) {
+      if (!latencyLogged) {
+        logClientMealLatency({
+          metadata: latencyMetadata,
+          operation: "create",
+          outcome: "error",
+          stages: latencyStages,
+          totalMs: roundMilliseconds(performance.now() - latencyStartedAt),
+        });
+        latencyLogged = true;
+      }
       if (pendingMealId) {
         setPendingMealSubmissions((current) =>
           current.map((meal) =>

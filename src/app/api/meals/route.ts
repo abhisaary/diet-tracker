@@ -20,6 +20,60 @@ export const runtime = "nodejs";
 
 const maxMealPhotos = 6;
 
+function roundMilliseconds(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function createMealLatencyTracker(operation: "create" | "edit") {
+  const requestId = crypto.randomUUID();
+  const requestStartedAt = performance.now();
+  const stages: Record<string, number> = {};
+
+  return {
+    getHeaders() {
+      const totalMs = roundMilliseconds(performance.now() - requestStartedAt);
+      const serverTiming = [
+        ...Object.entries(stages).map(
+          ([name, duration]) => `${name};dur=${duration}`,
+        ),
+        `total;dur=${totalMs}`,
+      ].join(", ");
+
+      return {
+        "Server-Timing": serverTiming,
+        "X-Meal-Request-Id": requestId,
+      };
+    },
+    log(
+      outcome: "error" | "success",
+      metadata: Record<string, number | string> = {},
+    ) {
+      console.info(
+        "[meal-latency]",
+        JSON.stringify({
+          metadata,
+          operation,
+          outcome,
+          requestId,
+          source: "server",
+          stages,
+          totalMs: roundMilliseconds(performance.now() - requestStartedAt),
+        }),
+      );
+    },
+    async measure<T>(name: string, action: () => Promise<T>) {
+      const startedAt = performance.now();
+
+      try {
+        return await action();
+      } finally {
+        stages[name] = roundMilliseconds(performance.now() - startedAt);
+      }
+    },
+    requestId,
+  };
+}
+
 function getFileExtension(fileName: string, mimeType: string) {
   const fromName = fileName.split(".").pop();
 
@@ -182,16 +236,24 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const auth = await getAuthenticatedSupabase(request);
+  const latency = createMealLatencyTracker("create");
+  const auth = await latency.measure("auth", () =>
+    getAuthenticatedSupabase(request),
+  );
 
   if (!auth) {
+    latency.log("error", { status: 401 });
     return jsonError("Sign in before logging a meal.", 401);
   }
 
   if (request.headers.get("content-type")?.includes("application/json")) {
-    const input = uploadedMealInputSchema.safeParse(await request.json());
+    const requestBody = await latency.measure("request-parse", () =>
+      request.json(),
+    );
+    const input = uploadedMealInputSchema.safeParse(requestBody);
 
     if (!input.success) {
+      latency.log("error", { status: 400 });
       return jsonError(input.error.issues[0]?.message ?? "Invalid meal input.");
     }
 
@@ -199,6 +261,7 @@ export async function POST(request: Request) {
     const uploadedPhotos = input.data.photos;
 
     if (!description && !uploadedPhotos.length) {
+      latency.log("error", { status: 400 });
       return jsonError("Add a meal note or image before saving.");
     }
 
@@ -207,6 +270,7 @@ export async function POST(request: Request) {
         (photo) => !photo.fileId.startsWith(`${auth.user.id}/`),
       )
     ) {
+      latency.log("error", { status: 403 });
       return jsonError("A meal photo does not belong to this user.", 403);
     }
 
@@ -214,55 +278,75 @@ export async function POST(request: Request) {
     let meal: MealRecord;
 
     try {
-      const images = await downloadMealPhotos(auth.supabase, uploadedPhotos);
-      const nutrition = await estimateMealNutrition({
-        description,
-        images,
-        recentMealContext: formatRecentMealContext(
-          await listMeals(auth.supabase, auth.user.id),
-        ),
-        restaurantLink: input.data.restaurantLink,
-        submittedAt,
-        timezone: input.data.timezone,
-        trackedNutrients: getTrackedNutrients(
-          auth.user.user_metadata?.trackedNutrients,
-        ),
-      });
+      const images = await latency.measure("photo-download", () =>
+        downloadMealPhotos(auth.supabase, uploadedPhotos),
+      );
+      const recentMeals = await latency.measure("recent-meals", () =>
+        listMeals(auth.supabase, auth.user.id),
+      );
+      const nutrition = await latency.measure("openai", () =>
+        estimateMealNutrition({
+          description,
+          images,
+          recentMealContext: formatRecentMealContext(recentMeals),
+          restaurantLink: input.data.restaurantLink,
+          submittedAt,
+          timezone: input.data.timezone,
+          trackedNutrients: getTrackedNutrients(
+            auth.user.user_metadata?.trackedNutrients,
+          ),
+        }),
+      );
       const eatenAt =
         nutrition.inferredMealTime ?? input.data.eatenAt ?? submittedAt;
 
-      meal = await insertMeal({
-        description:
-          description || nutrition.cleanedDescription || "Image-only meal",
-        eatenAt,
-        id: crypto.randomUUID(),
-        nutrition,
-        photos: uploadedPhotos,
-        restaurantLink: input.data.restaurantLink,
-        supabase: auth.supabase,
-        userId: auth.user.id,
-      });
+      meal = await latency.measure("db-insert", () =>
+        insertMeal({
+          description:
+            description || nutrition.cleanedDescription || "Image-only meal",
+          eatenAt,
+          id: crypto.randomUUID(),
+          nutrition,
+          photos: uploadedPhotos,
+          restaurantLink: input.data.restaurantLink,
+          supabase: auth.supabase,
+          userId: auth.user.id,
+        }),
+      );
     } catch (error) {
-      await removeMealPhotos(
-        auth.supabase,
-        uploadedPhotos.map((photo) => photo.fileId),
-      ).catch(() => undefined);
+      await latency
+        .measure("cleanup", () =>
+          removeMealPhotos(
+            auth.supabase,
+            uploadedPhotos.map((photo) => photo.fileId),
+          ),
+        )
+        .catch(() => undefined);
+      latency.log("error", { photoCount: uploadedPhotos.length, status: 500 });
       throw error;
     }
 
-    return NextResponse.json({ meal }, { status: 201 });
+    latency.log("success", { photoCount: uploadedPhotos.length, status: 201 });
+    return NextResponse.json(
+      { meal },
+      { headers: latency.getHeaders(), status: 201 },
+    );
   }
 
-  const formData = await request.formData();
+  const formData = await latency.measure("request-parse", () =>
+    request.formData(),
+  );
   const photos = [...formData.getAll("photos"), ...formData.getAll("photo")].filter(
     (value): value is File => value instanceof File && value.size > 0,
   );
 
   if (photos.length > maxMealPhotos) {
+    latency.log("error", { status: 400 });
     return jsonError(`Add no more than ${maxMealPhotos} images per meal.`);
   }
 
   if (photos.some((photo) => photo.type && !photo.type.startsWith("image/"))) {
+    latency.log("error", { status: 400 });
     return jsonError("Meal uploads must be image files.");
   }
 
@@ -273,116 +357,168 @@ export async function POST(request: Request) {
   });
 
   if (!input.success) {
+    latency.log("error", { status: 400 });
     return jsonError(input.error.issues[0]?.message ?? "Invalid meal input.");
   }
 
   const description = input.data.description ?? "";
 
   if (!description && !photos.length) {
+    latency.log("error", { status: 400 });
     return jsonError("Add a meal note or image before saving.");
   }
 
   const id = crypto.randomUUID();
   const submittedAt = new Date().toISOString();
-  const pendingPhotos = await Promise.all(
-    photos.map(async (photo, index) => {
-      const mimeType = photo.type || "image/jpeg";
+  const pendingPhotos = await latency.measure("photo-read", () =>
+    Promise.all(
+      photos.map(async (photo, index) => {
+        const mimeType = photo.type || "image/jpeg";
 
-      return {
-        bytes: Buffer.from(await photo.arrayBuffer()),
-        fileName: `${id}-${index + 1}.${getFileExtension(photo.name, mimeType)}`,
-        mimeType,
-      };
-    }),
+        return {
+          bytes: Buffer.from(await photo.arrayBuffer()),
+          fileName: `${id}-${index + 1}.${getFileExtension(photo.name, mimeType)}`,
+          mimeType,
+        };
+      }),
+    ),
   );
-  const recentMealContext = formatRecentMealContext(
-    await listMeals(auth.supabase, auth.user.id),
+  const recentMeals = await latency.measure("recent-meals", () =>
+    listMeals(auth.supabase, auth.user.id),
   );
+  const recentMealContext = formatRecentMealContext(recentMeals);
   const trackedNutrients = getTrackedNutrients(
     auth.user.user_metadata?.trackedNutrients,
   );
-  const nutrition = await estimateMealNutrition({
-    description,
-    images: pendingPhotos.map(({ bytes, mimeType }) => ({ bytes, mimeType })),
-    recentMealContext,
-    restaurantLink: input.data.restaurantLink,
-    submittedAt,
-    timezone:
-      typeof formData.get("timezone") === "string"
-        ? (formData.get("timezone") as string)
-        : undefined,
-    trackedNutrients,
-  });
+  const nutrition = await latency.measure("openai", () =>
+    estimateMealNutrition({
+      description,
+      images: pendingPhotos.map(({ bytes, mimeType }) => ({ bytes, mimeType })),
+      recentMealContext,
+      restaurantLink: input.data.restaurantLink,
+      submittedAt,
+      timezone:
+        typeof formData.get("timezone") === "string"
+          ? (formData.get("timezone") as string)
+          : undefined,
+      trackedNutrients,
+    }),
+  );
   const eatenAt = nutrition.inferredMealTime ?? input.data.eatenAt ?? submittedAt;
   const datePath = eatenAt.slice(0, 10);
-  const uploadedPhotos = await uploadMealPhotos({
-    pathDate: datePath,
-    photos: pendingPhotos,
-    supabase: auth.supabase,
-    userId: auth.user.id,
-  });
+  const uploadedPhotos = await latency.measure("photo-upload", () =>
+    uploadMealPhotos({
+      pathDate: datePath,
+      photos: pendingPhotos,
+      supabase: auth.supabase,
+      userId: auth.user.id,
+    }),
+  );
   let meal: MealRecord;
 
   try {
-    meal = await insertMeal({
-      description: description || nutrition.cleanedDescription || "Image-only meal",
-      eatenAt,
-      id,
-      nutrition,
-      photos: uploadedPhotos,
-      restaurantLink: input.data.restaurantLink,
-      supabase: auth.supabase,
-      userId: auth.user.id,
-    });
+    meal = await latency.measure("db-insert", () =>
+      insertMeal({
+        description:
+          description || nutrition.cleanedDescription || "Image-only meal",
+        eatenAt,
+        id,
+        nutrition,
+        photos: uploadedPhotos,
+        restaurantLink: input.data.restaurantLink,
+        supabase: auth.supabase,
+        userId: auth.user.id,
+      }),
+    );
   } catch (error) {
-    await removeMealPhotos(
-      auth.supabase,
-      uploadedPhotos.map((photo) => photo.fileId),
-    ).catch(() => undefined);
+    await latency
+      .measure("cleanup", () =>
+        removeMealPhotos(
+          auth.supabase,
+          uploadedPhotos.map((photo) => photo.fileId),
+        ),
+      )
+      .catch(() => undefined);
+    latency.log("error", { photoCount: uploadedPhotos.length, status: 500 });
     throw error;
   }
 
-  return NextResponse.json({ meal }, { status: 201 });
+  latency.log("success", { photoCount: uploadedPhotos.length, status: 201 });
+  return NextResponse.json(
+    { meal },
+    { headers: latency.getHeaders(), status: 201 },
+  );
 }
 
 export async function PATCH(request: Request) {
-  const auth = await getAuthenticatedSupabase(request);
+  const latency = createMealLatencyTracker("edit");
+  const auth = await latency.measure("auth", () =>
+    getAuthenticatedSupabase(request),
+  );
 
   if (!auth) {
+    latency.log("error", { status: 401 });
     return jsonError("Sign in before editing a meal.", 401);
   }
 
-  const input = mealUpdateSchema.safeParse(await request.json());
+  const requestBody = await latency.measure("request-parse", () =>
+    request.json(),
+  );
+  const input = mealUpdateSchema.safeParse(requestBody);
 
   if (!input.success) {
+    latency.log("error", { status: 400 });
     return jsonError(input.error.issues[0]?.message ?? "Invalid meal update.");
   }
 
-  const existingMeal = await getMeal(auth.supabase, auth.user.id, input.data.id);
-  const images = await downloadMealPhotos(auth.supabase, existingMeal.photos);
-  const nutrition = await estimateMealNutrition({
-    description: formatMealForCorrection(existingMeal, input.data.correction),
-    images,
-    restaurantLink: existingMeal.restaurantLink,
-    submittedAt: existingMeal.createdAt,
-    timezone: input.data.timezone,
-    trackedNutrients: getTrackedNutrients(
-      auth.user.user_metadata?.trackedNutrients,
-    ),
-  });
-  const meal = await replaceMealNutrition({
-    correctionNote: getNextCorrectionNote(
-      existingMeal.correctionNote,
-      input.data.correction,
-    ),
-    eatenAt: nutrition.inferredMealTime ?? undefined,
-    id: input.data.id,
-    nutrition,
-    supabase: auth.supabase,
-    userId: auth.user.id,
-  });
+  try {
+    const existingMeal = await latency.measure("db-read", () =>
+      getMeal(auth.supabase, auth.user.id, input.data.id),
+    );
+    const images = await latency.measure("photo-download", () =>
+      downloadMealPhotos(auth.supabase, existingMeal.photos),
+    );
+    const nutrition = await latency.measure("openai", () =>
+      estimateMealNutrition({
+        description: formatMealForCorrection(
+          existingMeal,
+          input.data.correction,
+        ),
+        images,
+        restaurantLink: existingMeal.restaurantLink,
+        submittedAt: existingMeal.createdAt,
+        timezone: input.data.timezone,
+        trackedNutrients: getTrackedNutrients(
+          auth.user.user_metadata?.trackedNutrients,
+        ),
+      }),
+    );
+    const meal = await latency.measure("db-update", () =>
+      replaceMealNutrition({
+        correctionNote: getNextCorrectionNote(
+          existingMeal.correctionNote,
+          input.data.correction,
+        ),
+        eatenAt: nutrition.inferredMealTime ?? undefined,
+        id: input.data.id,
+        nutrition,
+        supabase: auth.supabase,
+        userId: auth.user.id,
+      }),
+    );
 
-  return NextResponse.json({ meal });
+    latency.log("success", {
+      photoCount: existingMeal.photos.length,
+      status: 200,
+    });
+    return NextResponse.json(
+      { meal },
+      { headers: latency.getHeaders() },
+    );
+  } catch (error) {
+    latency.log("error", { status: 500 });
+    throw error;
+  }
 }
 
 export async function DELETE(request: Request) {
