@@ -48,6 +48,9 @@ type UploadedMealPhotosResult = {
 type PlantVariety = NonNullable<
   MealRecord["nutrition"]["plantVarieties"]
 >[number];
+type IngredientMacroEstimate = NonNullable<
+  MealRecord["nutrition"]["macroBreakdown"]
+>[number];
 type MacroCalorieKey = "carbsGrams" | "fatGrams" | "proteinGrams";
 type ActivityLevel = "general" | "very_active";
 type SexForEstimate = "female" | "male";
@@ -58,6 +61,19 @@ type UserProfile = {
   sex?: SexForEstimate;
   weightPounds?: number;
 };
+type IngredientBreakdownColumn =
+  | {
+      id: string;
+      key: CoreMacroKey;
+      kind: "core";
+      label: string;
+    }
+  | {
+      id: string;
+      kind: "custom";
+      label: string;
+      nutrient: TrackedNutrient;
+    };
 
 const plantBackfillLockKey = `diet-tracker:plant-backfill:${CURRENT_PLANT_VARIETY_VERSION}`;
 const plantBackfillLockDurationMs = 10 * 60 * 1000;
@@ -122,7 +138,7 @@ const macroCalorieReferences: {
 
 const fiberChartReference = {
   label: "Fiber",
-  maxGrams: 60,
+  maxGrams: 80,
   minGrams: 40,
   strokeColor: "#8b5cf6",
 };
@@ -695,6 +711,76 @@ function getOrderedNutrientItems({
       },
     ];
   });
+}
+
+function getIngredientBreakdownColumns({
+  hiddenCoreNutrients,
+  nutrientOrder,
+  trackedNutrients,
+}: {
+  hiddenCoreNutrients: CoreMacroKey[];
+  nutrientOrder: string[];
+  trackedNutrients: TrackedNutrient[];
+}): IngredientBreakdownColumn[] {
+  return reconcileNutrientOrder(nutrientOrder, trackedNutrients).flatMap<
+    IngredientBreakdownColumn
+  >((id): IngredientBreakdownColumn[] => {
+      if (id.startsWith("core:")) {
+        const key = id.slice("core:".length);
+
+        if (!isCoreMacroKey(key) || hiddenCoreNutrients.includes(key)) {
+          return [];
+        }
+
+        const macroItem = coreMacroItems.find((item) => item.key === key);
+
+        return macroItem
+          ? [
+              {
+                id,
+                key,
+                kind: "core" as const,
+                label: formatNutrientName(macroItem.label),
+              },
+            ]
+          : [];
+      }
+
+      const name = id.slice("custom:".length);
+      const nutrient = trackedNutrients.find((item) => item.name === name);
+
+      return nutrient
+        ? [
+            {
+              id,
+              kind: "custom" as const,
+              label: formatNutrientName(nutrient.name),
+              nutrient,
+            },
+          ]
+        : [];
+  });
+}
+
+function formatIngredientBreakdownValue(
+  ingredient: IngredientMacroEstimate,
+  column: IngredientBreakdownColumn,
+) {
+  if (column.kind === "core") {
+    return (
+      coreMacroItems.find((item) => item.key === column.key)?.format(ingredient) ??
+      "--"
+    );
+  }
+
+  const estimate = ingredient.customNutrients?.find(
+    (item) =>
+      item.name === column.nutrient.name && item.unit === column.nutrient.unit,
+  );
+
+  return estimate
+    ? formatCustomNutrientAmount(estimate.amount, estimate.unit)
+    : "--";
 }
 
 function normalizeNutrientName(value: string) {
@@ -2397,6 +2483,11 @@ export default function Home() {
             name,
           }));
     const macroBreakdown = meal.nutrition.macroBreakdown ?? [];
+    const ingredientBreakdownColumns = getIngredientBreakdownColumns({
+      hiddenCoreNutrients,
+      nutrientOrder,
+      trackedNutrients,
+    });
     const cautions = meal.nutrition.cautions ?? [];
     const isEditing = editingMealId === meal.id;
     const isExpanded = expandedMealId === meal.id || isEditing;
@@ -2510,16 +2601,23 @@ export default function Home() {
                       Ingredient macro breakdown
                     </summary>
                     <div className="overflow-x-auto border-t border-slate-100">
-                      <table className="min-w-full text-left text-xs text-slate-700">
+                      <table className="min-w-max text-left text-xs text-slate-700">
                         <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
                           <tr>
-                            <th className="px-3 py-2 font-semibold">Ingredient</th>
-                            <th className="px-3 py-2 font-semibold">Amount</th>
-                            <th className="px-3 py-2 font-semibold">Cal</th>
-                            <th className="px-3 py-2 font-semibold">P</th>
-                            <th className="px-3 py-2 font-semibold">C</th>
-                            <th className="px-3 py-2 font-semibold">F</th>
-                            <th className="px-3 py-2 font-semibold">Fiber</th>
+                            <th className="sticky left-0 z-20 min-w-36 max-w-48 bg-slate-50 px-3 py-2 font-semibold shadow-[1px_0_0_0_#e2e8f0]">
+                              Ingredient
+                            </th>
+                            <th className="whitespace-nowrap px-3 py-2 font-semibold">
+                              Amount
+                            </th>
+                            {ingredientBreakdownColumns.map((column) => (
+                              <th
+                                className="min-w-16 whitespace-nowrap px-3 py-2 text-right font-semibold"
+                                key={column.id}
+                              >
+                                {column.label}
+                              </th>
+                            ))}
                           </tr>
                         </thead>
                         <tbody>
@@ -2528,25 +2626,23 @@ export default function Home() {
                               className="border-t border-slate-100"
                               key={`${ingredient.name}-${ingredient.amount}`}
                             >
-                              <td className="px-3 py-2 font-medium text-slate-950">
+                              <td className="sticky left-0 z-10 min-w-36 max-w-48 bg-white px-3 py-2 font-medium text-slate-950 shadow-[1px_0_0_0_#e2e8f0]">
                                 {ingredient.name}
                               </td>
-                              <td className="px-3 py-2">{ingredient.amount}</td>
-                              <td className="px-3 py-2">
-                                {Math.round(ingredient.calories)}
+                              <td className="whitespace-nowrap px-3 py-2">
+                                {ingredient.amount}
                               </td>
-                              <td className="px-3 py-2">
-                                {Math.round(ingredient.proteinGrams)}g
-                              </td>
-                              <td className="px-3 py-2">
-                                {Math.round(ingredient.carbsGrams)}g
-                              </td>
-                              <td className="px-3 py-2">
-                                {Math.round(ingredient.fatGrams)}g
-                              </td>
-                              <td className="px-3 py-2">
-                                {Math.round(ingredient.fiberGrams)}g
-                              </td>
+                              {ingredientBreakdownColumns.map((column) => (
+                                <td
+                                  className="whitespace-nowrap px-3 py-2 text-right"
+                                  key={column.id}
+                                >
+                                  {formatIngredientBreakdownValue(
+                                    ingredient,
+                                    column,
+                                  )}
+                                </td>
+                              ))}
                             </tr>
                           ))}
                         </tbody>

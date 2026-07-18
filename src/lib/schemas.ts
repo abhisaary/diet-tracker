@@ -26,15 +26,6 @@ export const mealPhotoSchema = z.object({
   fileName: z.string().optional(),
 });
 
-const ingredientMacroEstimateSchema = ingredientEstimateSchema.extend({
-  calories: z.number().nonnegative(),
-  proteinGrams: z.number().nonnegative(),
-  carbsGrams: z.number().nonnegative(),
-  fatGrams: z.number().nonnegative(),
-  fiberGrams: z.number().nonnegative(),
-  macroBasis: z.string(),
-});
-
 export const trackedNutrientSchema = z.object({
   name: z.string().trim().min(1),
   unit: z.string().trim().min(1),
@@ -43,6 +34,16 @@ export const trackedNutrientSchema = z.object({
 const customNutrientEstimateSchema = trackedNutrientSchema.extend({
   amount: z.number().nonnegative(),
   confidence: z.enum(["low", "medium", "high"]),
+});
+
+const ingredientMacroEstimateSchema = ingredientEstimateSchema.extend({
+  calories: z.number().nonnegative(),
+  proteinGrams: z.number().nonnegative(),
+  carbsGrams: z.number().nonnegative(),
+  fatGrams: z.number().nonnegative(),
+  fiberGrams: z.number().nonnegative(),
+  macroBasis: z.string(),
+  customNutrients: z.array(customNutrientEstimateSchema).optional(),
 });
 
 const mealCautionSchema = z.object({

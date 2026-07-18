@@ -30,6 +30,25 @@ const plantVarietyJsonSchema = {
   required: ["name", "category"],
 };
 
+const customNutrientEstimateResponseSchema = z.object({
+  amount: z.number().nonnegative(),
+  confidence: z.enum(["low", "medium", "high"]),
+  name: z.string(),
+  unit: z.string(),
+});
+
+const customNutrientEstimateJsonSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    amount: { type: "number", minimum: 0 },
+    confidence: { type: "string", enum: ["low", "medium", "high"] },
+    name: { type: "string" },
+    unit: { type: "string" },
+  },
+  required: ["name", "unit", "amount", "confidence"],
+};
+
 const estimateResponseSchema = z.object({
   calories: z.number().nonnegative(),
   calculationSummary: z.string(),
@@ -46,14 +65,7 @@ const estimateResponseSchema = z.object({
       label: z.string(),
     }),
   ),
-  customNutrients: z.array(
-    z.object({
-      amount: z.number().nonnegative(),
-      confidence: z.enum(["low", "medium", "high"]),
-      name: z.string(),
-      unit: z.string(),
-    }),
-  ),
+  customNutrients: z.array(customNutrientEstimateResponseSchema),
   estimatedPortion: z.string(),
   ingredientEstimates: z.array(
     z.object({
@@ -72,6 +84,7 @@ const estimateResponseSchema = z.object({
       fatGrams: z.number().nonnegative(),
       fiberGrams: z.number().nonnegative(),
       macroBasis: z.string(),
+      customNutrients: z.array(customNutrientEstimateResponseSchema),
     }),
   ),
   mealTitle: z.string(),
@@ -112,17 +125,7 @@ const estimateJsonSchema = {
     },
     customNutrients: {
       type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          amount: { type: "number", minimum: 0 },
-          confidence: { type: "string", enum: ["low", "medium", "high"] },
-          name: { type: "string" },
-          unit: { type: "string" },
-        },
-        required: ["name", "unit", "amount", "confidence"],
-      },
+      items: customNutrientEstimateJsonSchema,
     },
     estimatedPortion: { type: "string" },
     ingredientEstimates: {
@@ -154,6 +157,10 @@ const estimateJsonSchema = {
           fatGrams: { type: "number", minimum: 0 },
           fiberGrams: { type: "number", minimum: 0 },
           macroBasis: { type: "string" },
+          customNutrients: {
+            type: "array",
+            items: customNutrientEstimateJsonSchema,
+          },
         },
         required: [
           "name",
@@ -164,6 +171,7 @@ const estimateJsonSchema = {
           "fatGrams",
           "fiberGrams",
           "macroBasis",
+          "customNutrients",
         ],
       },
     },
@@ -346,8 +354,8 @@ export async function estimateMealNutrition({
     "For packaged foods, count only intentional components or nutritionally meaningful ingredients. Exclude trace ingredients, anything identified as 'contains 2% or less', and flavors, colors, preservatives, stabilizers, or emulsifiers.",
     "Do not apply a universal gram cutoff: a deliberately added small topping, nut, seed, or fresh herb still counts.",
     trackedNutrients?.length
-      ? `Also estimate these user-selected nutrients and return them in customNutrients using exactly these names and units: ${trackedNutrients.map((nutrient) => `${nutrient.name} (${nutrient.unit})`).join(", ")}.`
-      : "Return customNutrients as an empty array because the user has not selected additional nutrients.",
+      ? `Also estimate these user-selected nutrients using exactly these names and units: ${trackedNutrients.map((nutrient) => `${nutrient.name} (${nutrient.unit})`).join(", ")}. Return whole-meal totals in top-level customNutrients and each ingredient's contribution in that macroBreakdown item's customNutrients.`
+      : "Return customNutrients as an empty array at the top level and inside every macroBreakdown item because the user has not selected additional nutrients.",
     "Return cautions as an empty array for normal meals. Add a caution only when the meal has a clear macro imbalance, unusually large load, or notable ingredient pattern. Prefer zero cautions; return one caution for a clear concern; return two only for clearly separate concerns. Use a short factual label such as 'High fat load', 'Very high fiber', 'Low protein balance', or 'Stacked rich ingredients'.",
     "For each caution, keep description to one short factual sentence that adds detail beyond the label. Do not mention symptoms, gut effects, medical advice, 'worth watching', or whether the user should monitor anything. The ingredients array should list only the main ingredient culprits, not every ingredient.",
     "Return calculationSummary as a concise one-sentence explanation of the ingredient-sum calculation. Return sanityCheck as one concise sentence noting whether the total looks plausible or what could swing it.",
