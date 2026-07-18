@@ -122,8 +122,8 @@ const macroCalorieReferences: {
 
 const fiberChartReference = {
   label: "Fiber",
-  maxGrams: 38,
-  minGrams: 25,
+  maxGrams: 60,
+  minGrams: 40,
   strokeColor: "#8b5cf6",
 };
 
@@ -233,6 +233,28 @@ function formatMealTimeOfDay(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function formatPrimaryIngredientAmount(amount: string) {
+  const trimmedAmount = amount.trim();
+  const measurementUnits =
+    "(?:mg|g|kg|ml|l|oz|lb|grams?|kilograms?|milliliters?|ounces?|pounds?)";
+  const measurementValue =
+    `(?:about\\s+|approx\\.?\\s+|[~≈]\\s*)?[\\d./\\s–—-]+\\s*${measurementUnits}`;
+  const parentheticalMeasurement = new RegExp(
+    `\\s*\\(${measurementValue}\\)\\s*$`,
+    "i",
+  );
+  const separatedMeasurement = new RegExp(
+    `\\s*(?:\\/|,)\\s*${measurementValue}\\s*$`,
+    "i",
+  );
+  const primaryAmount = trimmedAmount
+    .replace(parentheticalMeasurement, "")
+    .replace(separatedMeasurement, "")
+    .trim();
+
+  return primaryAmount || trimmedAmount;
 }
 
 function formatMealDay(value: string) {
@@ -2540,7 +2562,8 @@ export default function Home() {
                   <ul className="mt-2 space-y-1 text-sm text-slate-700">
                     {ingredients.map((ingredient) => (
                       <li key={`${ingredient.name}-${ingredient.amount}`}>
-                        {ingredient.name}: {ingredient.amount}
+                        {ingredient.name}:{" "}
+                        {formatPrimaryIngredientAmount(ingredient.amount)}
                       </li>
                     ))}
                   </ul>
