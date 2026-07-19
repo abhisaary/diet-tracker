@@ -2137,11 +2137,13 @@ export default function Home() {
     customNutrients,
     macros,
     className = "",
+    empty = false,
     plantCount,
   }: {
     customNutrients: CustomNutrientItem[];
     macros: MacroTotals;
     className?: string;
+    empty?: boolean;
     plantCount?: number;
   }) {
     const nutrientItems = getOrderedNutrientItems({
@@ -2161,7 +2163,9 @@ export default function Home() {
       >
         {nutrientItems.map(({ id, label, value }) => (
           <div className="min-w-14 max-w-24" key={id}>
-            <p className="truncate font-semibold leading-tight">{value}</p>
+            <p className="truncate font-semibold leading-tight">
+              {empty ? "--" : value}
+            </p>
             <p className="truncate text-[11px] leading-tight text-slate-500">
               {label}
             </p>
@@ -2169,7 +2173,9 @@ export default function Home() {
         ))}
         {plantCount !== undefined ? (
           <div className="min-w-14 max-w-24">
-            <p className="truncate font-semibold leading-tight">{plantCount}</p>
+            <p className="truncate font-semibold leading-tight">
+              {empty ? "--" : plantCount}
+            </p>
             <p className="truncate text-[11px] leading-tight text-slate-500">
               plant varieties
             </p>
@@ -3151,6 +3157,7 @@ export default function Home() {
                 {renderNutrientGrid({
                   className: "mt-2",
                   customNutrients: todayCustomNutrients,
+                  empty: todayMeals.length === 0,
                   macros: todayMacros,
                   plantCount: getUniquePlantCount(todayMeals),
                 })}
