@@ -3,6 +3,7 @@
 import {
   ChangeEvent,
   FormEvent,
+  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -2224,6 +2225,50 @@ export default function Home() {
     );
   }
 
+  function renderNutritionAverageRow({
+    average,
+    averageClassName = "",
+    basis,
+    id,
+    label,
+    reference,
+    trend,
+  }: {
+    average: string;
+    averageClassName?: string;
+    basis: string;
+    id: string;
+    label: string;
+    reference: string;
+    trend: ReactNode;
+  }) {
+    return (
+      <div
+        className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-3 border-t border-slate-100 px-3 py-3 text-xs sm:grid-cols-[minmax(0,0.9fr)_minmax(5.5rem,0.8fr)_minmax(9rem,1.6fr)_minmax(7rem,1.1fr)] sm:items-center sm:gap-x-4 sm:gap-y-0 sm:py-2"
+        key={id}
+      >
+        <span className="font-medium text-slate-800">{label}</span>
+        <div className="min-w-0 text-right sm:text-left">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:hidden">
+            30d avg
+          </p>
+          <p className={averageClassName}>{average}</p>
+          <p className="text-[10px] leading-3 text-slate-500">{basis}</p>
+        </div>
+        <div className="col-span-2 min-w-0 sm:col-span-1">
+          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:hidden">
+            7d trend
+          </p>
+          {trend}
+        </div>
+        <div className="col-span-2 flex items-start justify-between gap-4 border-t border-slate-100 pt-2 text-slate-500 sm:col-span-1 sm:block sm:border-0 sm:pt-0">
+          <span className="font-semibold text-slate-400 sm:hidden">Reference</span>
+          <span className="text-right leading-4 sm:text-left">{reference}</span>
+        </div>
+      </div>
+    );
+  }
+
   function renderMiniTrendChart({
     points,
     referenceMax,
@@ -3534,7 +3579,7 @@ export default function Home() {
                 </p>
               ) : (
                 <div className="mt-3 overflow-hidden rounded-2xl border border-slate-200">
-                  <div className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] gap-3 bg-slate-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  <div className="hidden bg-slate-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:grid sm:grid-cols-[minmax(0,0.9fr)_minmax(5.5rem,0.8fr)_minmax(9rem,1.6fr)_minmax(7rem,1.1fr)] sm:gap-4">
                     <span>Nutrient</span>
                     <span>30d avg</span>
                     <span>7d trend</span>
@@ -3651,31 +3696,20 @@ export default function Home() {
                         }));
                       }
 
-                      return (
-                        <div
-                          className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] items-center gap-3 border-t border-slate-100 px-3 py-1 text-xs"
-                          key={macroItem.key}
-                        >
-                          <span className="font-medium text-slate-800">
-                            {formatNutrientName(macroItem.label)}
-                          </span>
-                          <div>
-                            <p className={getRangeTextClass(status)}>
-                              {macroItem.format(thirtyDayAverageMacros)}
-                            </p>
-                            <p className="text-[10px] leading-3 text-slate-500">
-                              {basisText}
-                            </p>
-                          </div>
-                          {renderMiniTrendChart({
-                            points: trendPoints,
-                            referenceMax: trendReferenceMax,
-                            referenceMin: trendReferenceMin,
-                            strokeColor: trendStrokeColor,
-                          })}
-                          <span className="text-slate-500">{referenceText}</span>
-                        </div>
-                      );
+                      return renderNutritionAverageRow({
+                        average: macroItem.format(thirtyDayAverageMacros),
+                        averageClassName: getRangeTextClass(status),
+                        basis: basisText,
+                        id: macroItem.key,
+                        label: formatNutrientName(macroItem.label),
+                        reference: referenceText,
+                        trend: renderMiniTrendChart({
+                          points: trendPoints,
+                          referenceMax: trendReferenceMax,
+                          referenceMin: trendReferenceMin,
+                          strokeColor: trendStrokeColor,
+                        }),
+                      });
                     })}
                   {thirtyDayAverageCustomNutrients.map((nutrient) => {
                     const unitLabel =
@@ -3696,34 +3730,23 @@ export default function Home() {
                       };
                     });
 
-                    return (
-                      <div
-                        className="grid grid-cols-[0.6fr_0.65fr_1.85fr_0.75fr] items-center gap-3 border-t border-slate-100 px-3 py-1 text-xs"
-                        key={`${nutrient.name}-${nutrient.unit}`}
-                      >
-                        <span className="font-medium text-slate-800">
-                          {formatNutrientName(nutrient.name)}
-                        </span>
-                        <div>
-                          <p>
-                            {nutrient.estimatedMeals > 0
-                              ? formatCustomNutrientAmount(
-                                  nutrient.amount,
-                                  nutrient.unit,
-                                )
-                              : "--"}
-                          </p>
-                          <p className="text-[10px] leading-3 text-slate-500">
-                            {unitLabel}
-                          </p>
-                        </div>
-                        {renderMiniTrendChart({
-                          points: trendPoints,
-                          strokeColor: "#64748b",
-                        })}
-                        <span className="text-slate-500">varies</span>
-                      </div>
-                    );
+                    return renderNutritionAverageRow({
+                      average:
+                        nutrient.estimatedMeals > 0
+                          ? formatCustomNutrientAmount(
+                              nutrient.amount,
+                              nutrient.unit,
+                            )
+                          : "--",
+                      basis: unitLabel,
+                      id: `${nutrient.name}-${nutrient.unit}`,
+                      label: formatNutrientName(nutrient.name),
+                      reference: "varies",
+                      trend: renderMiniTrendChart({
+                        points: trendPoints,
+                        strokeColor: "#64748b",
+                      }),
+                    });
                   })}
                 </div>
               )}
