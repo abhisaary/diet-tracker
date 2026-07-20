@@ -2244,10 +2244,16 @@ export default function Home() {
   }) {
     return (
       <div
-        className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-3 border-t border-slate-100 px-3 py-3 text-xs sm:grid-cols-[minmax(0,0.9fr)_minmax(5.5rem,0.8fr)_minmax(9rem,1.6fr)_minmax(7rem,1.1fr)] sm:items-center sm:gap-x-4 sm:gap-y-0 sm:py-2"
+        className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 border-t border-slate-100 px-3 py-2 text-xs sm:grid-cols-[minmax(0,0.9fr)_minmax(5.5rem,0.8fr)_minmax(9rem,1.6fr)_minmax(7rem,1.1fr)] sm:items-center sm:gap-x-4 sm:gap-y-0"
         key={id}
       >
-        <span className="font-medium text-slate-800">{label}</span>
+        <div className="min-w-0">
+          <p className="font-medium text-slate-800">{label}</p>
+          <p className="mt-0.5 text-[10px] leading-3 text-slate-500 sm:hidden">
+            <span className="font-semibold text-slate-400">Ref</span>{" "}
+            {reference}
+          </p>
+        </div>
         <div className="min-w-0 text-right sm:text-left">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:hidden">
             30d avg
@@ -2255,15 +2261,16 @@ export default function Home() {
           <p className={averageClassName}>{average}</p>
           <p className="text-[10px] leading-3 text-slate-500">{basis}</p>
         </div>
-        <div className="col-span-2 min-w-0 sm:col-span-1">
-          <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:hidden">
+        <div className="col-span-2 grid min-w-0 grid-cols-[3.5rem_minmax(0,1fr)] items-center gap-2 sm:col-span-1 sm:block">
+          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:hidden">
             7d trend
           </p>
-          {trend}
+          <div className="w-full max-w-[220px] justify-self-end sm:max-w-none">
+            {trend}
+          </div>
         </div>
-        <div className="col-span-2 flex items-start justify-between gap-4 border-t border-slate-100 pt-2 text-slate-500 sm:col-span-1 sm:block sm:border-0 sm:pt-0">
-          <span className="font-semibold text-slate-400 sm:hidden">Reference</span>
-          <span className="text-right leading-4 sm:text-left">{reference}</span>
+        <div className="hidden leading-4 text-slate-500 sm:col-span-1 sm:block">
+          {reference}
         </div>
       </div>
     );
