@@ -1252,6 +1252,40 @@ export default function Home() {
   }, [supabase]);
 
   useEffect(() => {
+    if (!accessToken) {
+      return;
+    }
+
+    let reconciliationTimers: number[] = [];
+
+    function reconcileStoredMeals() {
+      void loadMeals(accessToken, false).catch((error) => {
+        console.error("Could not reconcile meals after app resume:", error);
+      });
+    }
+
+    function refreshMealsAfterResume() {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+
+      reconciliationTimers.forEach((timer) => window.clearTimeout(timer));
+      reconciliationTimers = [0, 15_000, 60_000].map((delay) =>
+        window.setTimeout(reconcileStoredMeals, delay),
+      );
+    }
+
+    document.addEventListener("visibilitychange", refreshMealsAfterResume);
+
+    return () => {
+      document.removeEventListener("visibilitychange", refreshMealsAfterResume);
+      reconciliationTimers.forEach((timer) => window.clearTimeout(timer));
+    };
+    // Resume reconciliation should only restart when the authenticated token changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken]);
+
+  useEffect(() => {
     if (!message) {
       return;
     }
@@ -1605,6 +1639,10 @@ export default function Home() {
 
     const nextMeals = data.meals as MealRecord[];
     setMeals(nextMeals);
+    const storedMealIds = new Set(nextMeals.map((meal) => meal.id));
+    setPendingMealSubmissions((current) =>
+      current.filter((meal) => !storedMealIds.has(meal.id)),
+    );
 
     if (
       shouldBackfillPlants &&
@@ -1889,6 +1927,7 @@ export default function Home() {
       const apiStartedAt = performance.now();
       const response = await authenticatedFetch("/api/meals", {
         body: JSON.stringify({
+          clientMealId: pendingMealId,
           description,
           photos: uploadedPhotos,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,

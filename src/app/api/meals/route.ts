@@ -179,6 +179,7 @@ const mealDeleteSchema = z.object({
 });
 
 const uploadedMealInputSchema = mealInputSchema.extend({
+  clientMealId: z.string().uuid().optional(),
   photos: z
     .array(
       z.object({
@@ -305,7 +306,7 @@ export async function POST(request: Request) {
           description:
             description || nutrition.cleanedDescription || "Image-only meal",
           eatenAt,
-          id: crypto.randomUUID(),
+          id: input.data.clientMealId ?? crypto.randomUUID(),
           nutrition,
           photos: uploadedPhotos,
           restaurantLink: input.data.restaurantLink,
