@@ -58,7 +58,7 @@ type SexForEstimate = "female" | "male";
 type OnboardingAnnouncement = {
   id: string;
   message: string;
-  target: "meal" | "settings";
+  target: "install" | "meal" | "settings";
   targetLabel: string;
   title: string;
 };
@@ -103,10 +103,28 @@ const onboardingAnnouncements: OnboardingAnnouncement[] = [
     targetLabel: "Settings",
     title: "Track what matters to you",
   },
+  {
+    id: "home-screen-v1",
+    message:
+      "Add Diet Tracker to your iPhone Home Screen so you can open it like an app instead of returning to Safari each time.",
+    target: "install",
+    targetLabel: "Add to Home Screen",
+    title: "Create an app shortcut",
+  },
 ];
 
 function getOnboardingStorageKey(userEmail: string) {
   return `diet-tracker:onboarding:seen:v1:${userEmail.toLowerCase()}`;
+}
+
+function findNextOnboardingAnnouncement(
+  seenIds: Set<string>,
+  isStandaloneApp: boolean,
+) {
+  return onboardingAnnouncements.find(
+    ({ id, target }) =>
+      !seenIds.has(id) && (target !== "install" || !isStandaloneApp),
+  );
 }
 
 function isRunningStandalone() {
@@ -1140,7 +1158,11 @@ function toStatusMessage(
 
 export default function Home() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
+  const installOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
   const plantBackfillRunning = useRef(false);
+  const mealOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
+  const onboardingModalRef = useRef<HTMLElement | null>(null);
+  const settingsOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [activeForm, setActiveForm] = useState<"meal" | "symptom" | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
@@ -1268,6 +1290,16 @@ export default function Home() {
     setDraftNutrientOrder(nextNutrientOrder);
   }
 
+  function activateOnboarding(
+    announcement: OnboardingAnnouncement | undefined,
+  ) {
+    setActiveOnboardingId(announcement?.id ?? null);
+
+    if (announcement?.target === "install") {
+      setAccountMenuOpen(true);
+    }
+  }
+
   function showFirstUnseenOnboarding(userEmail: string) {
     try {
       const storedIds = JSON.parse(
@@ -1278,11 +1310,13 @@ export default function Home() {
           ? storedIds.filter((id): id is string => typeof id === "string")
           : [],
       );
-      setActiveOnboardingId(
-        onboardingAnnouncements.find(({ id }) => !seenIds.has(id))?.id ?? null,
+      activateOnboarding(
+        findNextOnboardingAnnouncement(seenIds, isStandaloneApp),
       );
     } catch {
-      setActiveOnboardingId(onboardingAnnouncements[0]?.id ?? null);
+      activateOnboarding(
+        findNextOnboardingAnnouncement(new Set(), isStandaloneApp),
+      );
     }
   }
 
@@ -1306,16 +1340,17 @@ export default function Home() {
         getOnboardingStorageKey(userEmail),
         JSON.stringify([...seenIds]),
       );
-      setActiveOnboardingId(
-        onboardingAnnouncements.find(({ id }) => !seenIds.has(id))?.id ?? null,
+      activateOnboarding(
+        findNextOnboardingAnnouncement(seenIds, isStandaloneApp),
       );
     } catch {
-      const activeIndex = onboardingAnnouncements.findIndex(
+      const availableAnnouncements = onboardingAnnouncements.filter(
+        ({ target }) => target !== "install" || !isStandaloneApp,
+      );
+      const activeIndex = availableAnnouncements.findIndex(
         ({ id }) => id === activeOnboardingId,
       );
-      setActiveOnboardingId(
-        onboardingAnnouncements[activeIndex + 1]?.id ?? null,
-      );
+      activateOnboarding(availableAnnouncements[activeIndex + 1]);
     }
   }
 
@@ -1454,14 +1489,30 @@ export default function Home() {
       return;
     }
 
+    const scrollPosition = activeOnboardingId ? 0 : window.scrollY;
     const previousBodyOverflow = document.body.style.overflow;
+    const previousBodyPosition = document.body.style.position;
+    const previousBodyTop = document.body.style.top;
+    const previousBodyWidth = document.body.style.width;
     const previousDocumentOverflow = document.documentElement.style.overflow;
+
+    if (activeOnboardingId) {
+      window.scrollTo(0, 0);
+    }
+
     document.body.style.overflow = "hidden";
+    document.body.style.position = "fixed";
+    document.body.style.top = `-${scrollPosition}px`;
+    document.body.style.width = "100%";
     document.documentElement.style.overflow = "hidden";
 
     return () => {
       document.body.style.overflow = previousBodyOverflow;
+      document.body.style.position = previousBodyPosition;
+      document.body.style.top = previousBodyTop;
+      document.body.style.width = previousBodyWidth;
       document.documentElement.style.overflow = previousDocumentOverflow;
+      window.scrollTo(0, scrollPosition);
     };
   }, [activeOnboardingId, analyticsOpen, installHelpOpen, settingsOpen]);
 
@@ -1472,6 +1523,50 @@ export default function Home() {
     : [];
   const activeOnboardingAnnouncement =
     onboardingAnnouncements.find(({ id }) => id === activeOnboardingId) ?? null;
+
+  useEffect(() => {
+    if (!activeOnboardingAnnouncement) {
+      return;
+    }
+
+    const modal = onboardingModalRef.current;
+    const target =
+      activeOnboardingAnnouncement.target === "meal"
+        ? mealOnboardingTargetRef.current
+        : activeOnboardingAnnouncement.target === "settings"
+          ? settingsOnboardingTargetRef.current
+          : installOnboardingTargetRef.current;
+
+    if (!modal || !target) {
+      return;
+    }
+
+    const updateModalTop = () => {
+      const targetBottom = target.getBoundingClientRect().bottom;
+      const viewportHeight =
+        window.visualViewport?.height ?? window.innerHeight;
+      modal.style.setProperty(
+        "--onboarding-modal-top",
+        `${Math.ceil(targetBottom + 16)}px`,
+      );
+      modal.style.setProperty(
+        "--onboarding-modal-max-height",
+        `${Math.max(240, Math.floor(viewportHeight - targetBottom - 32))}px`,
+      );
+    };
+    const frameId = window.requestAnimationFrame(updateModalTop);
+
+    window.addEventListener("resize", updateModalTop);
+    window.visualViewport?.addEventListener("resize", updateModalTop);
+    window.visualViewport?.addEventListener("scroll", updateModalTop);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener("resize", updateModalTop);
+      window.visualViewport?.removeEventListener("resize", updateModalTop);
+      window.visualViewport?.removeEventListener("scroll", updateModalTop);
+    };
+  }, [activeOnboardingAnnouncement]);
 
   function closeSettings() {
     setSettingsOpen(false);
@@ -1941,8 +2036,6 @@ export default function Home() {
       if (error) {
         throw error;
       }
-
-      showMessage({ kind: "success", text: "Signed in." });
     } catch (error) {
       showMessage({
         kind: "error",
@@ -3000,6 +3093,7 @@ export default function Home() {
                     : ""
                 }`}
                 onClick={() => (settingsOpen ? closeSettings() : openSettings())}
+                ref={settingsOnboardingTargetRef}
                 title="Settings"
                 type="button"
               >
@@ -3024,7 +3118,13 @@ export default function Home() {
                       onClick={() => setAccountMenuOpen(false)}
                       type="button"
                     />
-                    <div className="absolute right-0 top-12 z-20 w-72 rounded-2xl border border-slate-200 bg-white p-3 text-sm shadow-lg">
+                    <div
+                      className={`absolute right-0 top-12 w-72 rounded-2xl border border-slate-200 bg-white p-3 text-sm shadow-lg ${
+                        activeOnboardingAnnouncement?.target === "install"
+                          ? "z-auto"
+                          : "z-20"
+                      }`}
+                    >
                       <div className="flex items-center justify-between gap-3">
                         {userEmail ? (
                           <p className="min-w-0 truncate py-1 text-xs text-slate-500">
@@ -3044,11 +3144,16 @@ export default function Home() {
                       </div>
                       {!isStandaloneApp ? (
                         <button
-                          className="mt-3 flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700"
+                          className={`mt-3 flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 ${
+                            activeOnboardingAnnouncement?.target === "install"
+                              ? "pointer-events-none relative z-[80] ring-4 ring-emerald-300"
+                              : ""
+                          }`}
                           onClick={() => {
                             setAccountMenuOpen(false);
                             setInstallHelpOpen(true);
                           }}
+                          ref={installOnboardingTargetRef}
                           type="button"
                         >
                           <ShareIcon />
@@ -3286,6 +3391,7 @@ export default function Home() {
                 onClick={() =>
                   setActiveForm(activeForm === "meal" ? null : "meal")
                 }
+                ref={mealOnboardingTargetRef}
                 type="button"
               >
                 + Meal
@@ -3473,13 +3579,7 @@ export default function Home() {
         )}
       </div>
       {accessToken && activeOnboardingAnnouncement ? (
-        <div
-          className={`fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto overscroll-contain bg-slate-950/50 px-4 pb-4 sm:items-center sm:overflow-hidden sm:p-4 ${
-            activeOnboardingAnnouncement.target === "meal"
-              ? "pt-64"
-              : "pt-40"
-          }`}
-        >
+        <div className="fixed inset-0 z-[70] overflow-hidden overscroll-none bg-slate-950/50 sm:flex sm:items-center sm:justify-center sm:p-4">
           <button
             aria-label="Dismiss onboarding message"
             className="absolute inset-0 h-full w-full cursor-default"
@@ -3489,7 +3589,8 @@ export default function Home() {
           <section
             aria-labelledby="onboarding-title"
             aria-modal="true"
-            className="relative z-10 w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl"
+            className="absolute left-1/2 top-[var(--onboarding-modal-top,15rem)] z-10 flex max-h-[var(--onboarding-modal-max-height,calc(100dvh-16rem))] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 flex-col overflow-hidden rounded-3xl bg-white p-6 shadow-xl sm:relative sm:inset-auto sm:max-h-[calc(100dvh-2rem)] sm:w-full sm:translate-x-0"
+            ref={onboardingModalRef}
             role="dialog"
           >
             <h2
@@ -3503,14 +3604,19 @@ export default function Home() {
                 {activeOnboardingAnnouncement.target === "settings" ? (
                   <SettingsIcon />
                 ) : null}
+                {activeOnboardingAnnouncement.target === "install" ? (
+                  <ShareIcon />
+                ) : null}
                 {activeOnboardingAnnouncement.targetLabel}
               </span>
             </div>
-            <p className="mt-3 text-sm leading-7 text-slate-600">
-              {activeOnboardingAnnouncement.message}
-            </p>
+            <div className="mt-3 min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
+              <p className="pr-1 text-sm leading-7 text-slate-600">
+                {activeOnboardingAnnouncement.message}
+              </p>
+            </div>
             <button
-              className="mt-5 w-full rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+              className="mt-5 w-full shrink-0 rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
               onClick={dismissActiveOnboarding}
               type="button"
             >
