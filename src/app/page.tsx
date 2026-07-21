@@ -3473,7 +3473,13 @@ export default function Home() {
         )}
       </div>
       {accessToken && activeOnboardingAnnouncement ? (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center overscroll-contain bg-slate-950/50 p-4">
+        <div
+          className={`fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto overscroll-contain bg-slate-950/50 px-4 pb-4 sm:items-center sm:overflow-hidden sm:p-4 ${
+            activeOnboardingAnnouncement.target === "meal"
+              ? "pt-64"
+              : "pt-40"
+          }`}
+        >
           <button
             aria-label="Dismiss onboarding message"
             className="absolute inset-0 h-full w-full cursor-default"
