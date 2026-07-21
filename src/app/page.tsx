@@ -2,6 +2,7 @@
 
 import {
   ChangeEvent,
+  type CSSProperties,
   FormEvent,
   type ReactNode,
   useEffect,
@@ -62,6 +63,13 @@ type UserProfile = {
   sex?: SexForEstimate;
   weightPounds?: number;
 };
+type OnboardingStep = {
+  id: string;
+  message: string;
+  target: "meal" | "settings";
+  targetLabel: string;
+  title: string;
+};
 type IngredientBreakdownColumn =
   | {
       id: string;
@@ -78,6 +86,28 @@ type IngredientBreakdownColumn =
 
 const plantBackfillLockKey = `diet-tracker:plant-backfill:${CURRENT_PLANT_VARIETY_VERSION}`;
 const plantBackfillLockDurationMs = 10 * 60 * 1000;
+const onboardingSteps: OnboardingStep[] = [
+  {
+    id: "meal-entry-v1",
+    message:
+      "Add any combination of text and photos that gives the model enough context to estimate your meal. Include approximate portions when they aren’t obvious. If you’re entering a meal later, tell the model when you ate it—for example, “lunch around 1 PM.” It can use your description, images, recent meal history, and online searches for restaurant menus or packaged foods, so you can reference restaurants or products or upload screenshots of menus. Write naturally—the app will clean up and structure your entry, so grammar and formatting don’t matter. Estimates are approximate, and you can correct them afterward.",
+    target: "meal",
+    targetLabel: "+ Meal",
+    title: "Log meals your way",
+  },
+  {
+    id: "nutrient-settings-v1",
+    message:
+      "Customize the nutrients you care about. You can show, hide, and reorder the default nutrients, or add and remove others such as calcium, iron, or cholesterol.",
+    target: "settings",
+    targetLabel: "Settings",
+    title: "Track what matters to you",
+  },
+];
+
+function getOnboardingStorageKey(email: string) {
+  return `diet-tracker:onboarding:seen:v1:${email.toLowerCase()}`;
+}
 
 const coreMacroItems: {
   format: (macros: MacroTotals) => string;
@@ -1081,6 +1111,8 @@ function toStatusMessage(
 export default function Home() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
   const plantBackfillRunning = useRef(false);
+  const mealActionButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsActionButtonRef = useRef<HTMLButtonElement>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [activeForm, setActiveForm] = useState<"meal" | "symptom" | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
@@ -1115,6 +1147,8 @@ export default function Home() {
   const [profile, setProfile] = useState<UserProfile>(defaultUserProfile);
   const [profilePending, setProfilePending] = useState(false);
   const [savingMealId, setSavingMealId] = useState<string | null>(null);
+  const [onboardingStepId, setOnboardingStepId] = useState<string | null>(null);
+  const [onboardingTargetBottom, setOnboardingTargetBottom] = useState(240);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPending, setSettingsPending] = useState(false);
   const [showFullLog, setShowFullLog] = useState(false);
@@ -1128,6 +1162,9 @@ export default function Home() {
   const [symptomPending, setSymptomPending] = useState(false);
   const [trackedNutrients, setTrackedNutrients] = useState<TrackedNutrient[]>([]);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const activeOnboardingStep =
+    onboardingSteps.find((step) => step.id === onboardingStepId) ?? null;
+  const onboardingTarget = activeOnboardingStep?.target ?? null;
 
   function showMessage(nextMessage: { kind: "error" | "success"; text: string }) {
     setMessageVisible(true);
@@ -1203,6 +1240,57 @@ export default function Home() {
     setDraftNutrientOrder(nextNutrientOrder);
   }
 
+  function loadOnboardingProgress(email: string) {
+    try {
+      const storedIds = JSON.parse(
+        window.localStorage.getItem(getOnboardingStorageKey(email)) ?? "[]",
+      );
+      const seenIds = new Set(
+        Array.isArray(storedIds)
+          ? storedIds.filter((id): id is string => typeof id === "string")
+          : [],
+      );
+
+      setOnboardingStepId(
+        onboardingSteps.find((step) => !seenIds.has(step.id))?.id ?? null,
+      );
+    } catch {
+      setOnboardingStepId(onboardingSteps[0]?.id ?? null);
+    }
+  }
+
+  function continueOnboarding() {
+    if (!onboardingStepId || !userEmail) {
+      setOnboardingStepId(null);
+      return;
+    }
+
+    try {
+      const storedIds = JSON.parse(
+        window.localStorage.getItem(getOnboardingStorageKey(userEmail)) ?? "[]",
+      );
+      const seenIds = new Set(
+        Array.isArray(storedIds)
+          ? storedIds.filter((id): id is string => typeof id === "string")
+          : [],
+      );
+
+      seenIds.add(onboardingStepId);
+      window.localStorage.setItem(
+        getOnboardingStorageKey(userEmail),
+        JSON.stringify([...seenIds]),
+      );
+      setOnboardingStepId(
+        onboardingSteps.find((step) => !seenIds.has(step.id))?.id ?? null,
+      );
+    } catch {
+      const currentIndex = onboardingSteps.findIndex(
+        (step) => step.id === onboardingStepId,
+      );
+      setOnboardingStepId(onboardingSteps[currentIndex + 1]?.id ?? null);
+    }
+  }
+
   useEffect(() => {
     fetch("/api/status")
       .then((response) => response.json())
@@ -1213,11 +1301,15 @@ export default function Home() {
 
     supabase.auth.getSession().then(({ data }) => {
       const token = data.session?.access_token ?? null;
+      const email = data.session?.user.email ?? null;
       setAccessToken(token);
-      setUserEmail(data.session?.user.email ?? null);
+      setUserEmail(email);
       applyUserSettings(data.session?.user.user_metadata);
-      if (token) {
+      if (token && email) {
+        loadOnboardingProgress(email);
         loadMeals(token);
+      } else {
+        setOnboardingStepId(null);
       }
     });
 
@@ -1225,12 +1317,15 @@ export default function Home() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       const token = session?.access_token ?? null;
+      const email = session?.user.email ?? null;
       setAccessToken(token);
-      setUserEmail(session?.user.email ?? null);
+      setUserEmail(email);
       applyUserSettings(session?.user.user_metadata);
-      if (token) {
+      if (token && email) {
+        loadOnboardingProgress(email);
         loadMeals(token);
       } else {
+        setOnboardingStepId(null);
         setDraftHiddenCoreNutrients([]);
         setDraftNutrientOrder([]);
         setDraftTrackedNutrients([]);
@@ -1310,7 +1405,41 @@ export default function Home() {
   );
 
   useEffect(() => {
-    if (!settingsOpen && !analyticsOpen) {
+    if (!onboardingTarget) {
+      return;
+    }
+
+    let animationFrame = 0;
+    const updatePosition = () => {
+      const target =
+        onboardingTarget === "meal"
+          ? mealActionButtonRef.current
+          : settingsActionButtonRef.current;
+
+      if (target) {
+        setOnboardingTargetBottom(
+          Math.ceil(target.getBoundingClientRect().bottom + 12),
+        );
+      }
+    };
+    const scheduleUpdate = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(updatePosition);
+    };
+
+    scheduleUpdate();
+    window.addEventListener("resize", scheduleUpdate);
+    window.visualViewport?.addEventListener("resize", scheduleUpdate);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.removeEventListener("resize", scheduleUpdate);
+      window.visualViewport?.removeEventListener("resize", scheduleUpdate);
+    };
+  }, [onboardingTarget]);
+
+  useEffect(() => {
+    if (!onboardingStepId && !settingsOpen && !analyticsOpen) {
       return;
     }
 
@@ -1323,7 +1452,7 @@ export default function Home() {
       document.body.style.overflow = previousBodyOverflow;
       document.documentElement.style.overflow = previousDocumentOverflow;
     };
-  }, [analyticsOpen, settingsOpen]);
+  }, [analyticsOpen, onboardingStepId, settingsOpen]);
 
   const missingConfig = status
     ? Object.entries(status.configured)
@@ -2852,8 +2981,13 @@ export default function Home() {
                 aria-label="Open settings"
                 className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm ${
                   settingsOpen ? "ring-4 ring-emerald-100" : ""
+                } ${
+                  onboardingTarget === "settings"
+                    ? "relative z-[80] ring-4 ring-emerald-300"
+                    : ""
                 }`}
                 onClick={() => (settingsOpen ? closeSettings() : openSettings())}
+                ref={settingsActionButtonRef}
                 title="Settings"
                 type="button"
               >
@@ -3119,10 +3253,15 @@ export default function Home() {
                   activeForm === "meal"
                     ? "bg-emerald-500 text-white"
                     : "bg-white text-slate-950 shadow-sm"
+                } ${
+                  onboardingTarget === "meal"
+                    ? "relative z-[80] ring-4 ring-emerald-300"
+                    : ""
                 }`}
                 onClick={() =>
                   setActiveForm(activeForm === "meal" ? null : "meal")
                 }
+                ref={mealActionButtonRef}
                 type="button"
               >
                 + Meal
@@ -3309,6 +3448,54 @@ export default function Home() {
           </>
         )}
       </div>
+      {accessToken && activeOnboardingStep ? (
+        <div
+          className="fixed inset-0 z-[70] flex items-start justify-center overscroll-contain bg-slate-950/50 p-4 sm:items-center"
+          style={
+            {
+              "--onboarding-top": `${onboardingTargetBottom}px`,
+            } as CSSProperties
+          }
+        >
+          <button
+            aria-label="Dismiss onboarding message"
+            className="absolute inset-0 h-full w-full cursor-default"
+            onClick={continueOnboarding}
+            type="button"
+          />
+          <section
+            aria-labelledby="onboarding-title"
+            aria-modal="true"
+            className="absolute left-4 right-4 top-[var(--onboarding-top)] z-10 max-h-[calc(100dvh-var(--onboarding-top)-1rem)] overflow-y-auto rounded-3xl bg-white p-6 shadow-xl sm:static sm:max-h-[85vh] sm:w-full sm:max-w-lg"
+            role="dialog"
+          >
+            <h2
+              className="text-2xl font-semibold tracking-tight"
+              id="onboarding-title"
+            >
+              {activeOnboardingStep.title}
+            </h2>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-bold text-emerald-800">
+                {activeOnboardingStep.target === "settings" ? (
+                  <SettingsIcon />
+                ) : null}
+                {activeOnboardingStep.targetLabel}
+              </span>
+            </div>
+            <p className="mt-3 text-sm leading-7 text-slate-600">
+              {activeOnboardingStep.message}
+            </p>
+            <button
+              className="mt-5 w-full rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+              onClick={continueOnboarding}
+              type="button"
+            >
+              Continue
+            </button>
+          </section>
+        </div>
+      ) : null}
       {accessToken && settingsOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-slate-950/40 p-4">
           <button
