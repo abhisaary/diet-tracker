@@ -93,7 +93,7 @@ const onboardingAnnouncements: OnboardingAnnouncement[] = [
       "Add any combination of text and photos that gives the model enough context to estimate your meal. Include approximate portions when they aren’t obvious. If you’re entering a meal later, tell the model when you ate it—for example, “lunch around 1 PM.” It can use your description, images, recent meal history, and online searches for restaurant menus or packaged foods, so you can reference restaurants or products or upload screenshots of menus. Write naturally—the app will clean up and structure your entry, so grammar and formatting don’t matter. Estimates are approximate, and you can correct them afterward.",
     target: "meal",
     targetLabel: "+ Meal",
-    title: "Log meals your way",
+    title: "Add meals with maximal laziness",
   },
   {
     id: "nutrient-settings-v1",
@@ -121,10 +121,11 @@ function findNextOnboardingAnnouncement(
   seenIds: Set<string>,
   isStandaloneApp: boolean,
 ) {
-  return onboardingAnnouncements.find(
-    ({ id, target }) =>
-      !seenIds.has(id) && (target !== "install" || !isStandaloneApp),
-  );
+  if (isStandaloneApp) {
+    return undefined;
+  }
+
+  return onboardingAnnouncements.find(({ id }) => !seenIds.has(id));
 }
 
 function isRunningStandalone() {
@@ -1344,9 +1345,9 @@ export default function Home() {
         findNextOnboardingAnnouncement(seenIds, isStandaloneApp),
       );
     } catch {
-      const availableAnnouncements = onboardingAnnouncements.filter(
-        ({ target }) => target !== "install" || !isStandaloneApp,
-      );
+      const availableAnnouncements = isStandaloneApp
+        ? []
+        : onboardingAnnouncements;
       const activeIndex = availableAnnouncements.findIndex(
         ({ id }) => id === activeOnboardingId,
       );
