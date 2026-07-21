@@ -55,6 +55,13 @@ type IngredientMacroEstimate = NonNullable<
 type MacroCalorieKey = "carbsGrams" | "fatGrams" | "proteinGrams";
 type ActivityLevel = "general" | "very_active";
 type SexForEstimate = "female" | "male";
+type OnboardingAnnouncement = {
+  id: string;
+  message: string;
+  target: "meal" | "settings";
+  targetLabel: string;
+  title: string;
+};
 type UserProfile = {
   activityLevel: ActivityLevel;
   ageYears?: number;
@@ -78,6 +85,40 @@ type IngredientBreakdownColumn =
 
 const plantBackfillLockKey = `diet-tracker:plant-backfill:${CURRENT_PLANT_VARIETY_VERSION}`;
 const plantBackfillLockDurationMs = 10 * 60 * 1000;
+
+const onboardingAnnouncements: OnboardingAnnouncement[] = [
+  {
+    id: "meal-entry-v1",
+    message:
+      "Add any combination of text and photos that gives the model enough context to estimate your meal. Include approximate portions when they aren’t obvious. If you’re entering a meal later, tell the model when you ate it—for example, “lunch around 1 PM.” It can use your description, images, recent meal history, and online searches for restaurant menus or packaged foods, so you can reference restaurants or products or upload screenshots of menus. Write naturally—the app will clean up and structure your entry, so grammar and formatting don’t matter. Estimates are approximate, and you can correct them afterward.",
+    target: "meal",
+    targetLabel: "+ Meal",
+    title: "Log meals your way",
+  },
+  {
+    id: "nutrient-settings-v1",
+    message:
+      "Customize the nutrients you care about. You can show, hide, and reorder the default nutrients, or add and remove others such as calcium, iron, or cholesterol.",
+    target: "settings",
+    targetLabel: "Settings",
+    title: "Track what matters to you",
+  },
+];
+
+function getOnboardingStorageKey(userEmail: string) {
+  return `diet-tracker:onboarding:seen:v1:${userEmail.toLowerCase()}`;
+}
+
+function isRunningStandalone() {
+  if (typeof window === "undefined") {
+    return false;
+  }
+
+  return (
+    window.matchMedia("(display-mode: standalone)").matches ||
+    Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone)
+  );
+}
 
 const coreMacroItems: {
   format: (macros: MacroTotals) => string;
@@ -1053,6 +1094,25 @@ function SettingsIcon() {
   );
 }
 
+function ShareIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M12 16V3" />
+      <path d="m7 8 5-5 5 5" />
+      <path d="M5 11v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8" />
+    </svg>
+  );
+}
+
 function toStatusMessage(
   kind: "error" | "success" | null,
   message: string | null,
@@ -1086,6 +1146,8 @@ export default function Home() {
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [authPending, setAuthPending] = useState(false);
   const [deletingMealId, setDeletingMealId] = useState<string | null>(null);
+  const [installHelpOpen, setInstallHelpOpen] = useState(false);
+  const [isStandaloneApp, setIsStandaloneApp] = useState(isRunningStandalone);
   const [draftProfile, setDraftProfile] = useState<UserProfile>(defaultUserProfile);
   const [draftHiddenCoreNutrients, setDraftHiddenCoreNutrients] = useState<
     CoreMacroKey[]
@@ -1115,6 +1177,9 @@ export default function Home() {
   const [profile, setProfile] = useState<UserProfile>(defaultUserProfile);
   const [profilePending, setProfilePending] = useState(false);
   const [savingMealId, setSavingMealId] = useState<string | null>(null);
+  const [activeOnboardingId, setActiveOnboardingId] = useState<string | null>(
+    null,
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPending, setSettingsPending] = useState(false);
   const [showFullLog, setShowFullLog] = useState(false);
@@ -1203,6 +1268,57 @@ export default function Home() {
     setDraftNutrientOrder(nextNutrientOrder);
   }
 
+  function showFirstUnseenOnboarding(userEmail: string) {
+    try {
+      const storedIds = JSON.parse(
+        window.localStorage.getItem(getOnboardingStorageKey(userEmail)) ?? "[]",
+      );
+      const seenIds = new Set(
+        Array.isArray(storedIds)
+          ? storedIds.filter((id): id is string => typeof id === "string")
+          : [],
+      );
+      setActiveOnboardingId(
+        onboardingAnnouncements.find(({ id }) => !seenIds.has(id))?.id ?? null,
+      );
+    } catch {
+      setActiveOnboardingId(onboardingAnnouncements[0]?.id ?? null);
+    }
+  }
+
+  function dismissActiveOnboarding() {
+    if (!activeOnboardingId || !userEmail) {
+      setActiveOnboardingId(null);
+      return;
+    }
+
+    try {
+      const storedIds = JSON.parse(
+        window.localStorage.getItem(getOnboardingStorageKey(userEmail)) ?? "[]",
+      );
+      const seenIds = new Set(
+        Array.isArray(storedIds)
+          ? storedIds.filter((id): id is string => typeof id === "string")
+          : [],
+      );
+      seenIds.add(activeOnboardingId);
+      window.localStorage.setItem(
+        getOnboardingStorageKey(userEmail),
+        JSON.stringify([...seenIds]),
+      );
+      setActiveOnboardingId(
+        onboardingAnnouncements.find(({ id }) => !seenIds.has(id))?.id ?? null,
+      );
+    } catch {
+      const activeIndex = onboardingAnnouncements.findIndex(
+        ({ id }) => id === activeOnboardingId,
+      );
+      setActiveOnboardingId(
+        onboardingAnnouncements[activeIndex + 1]?.id ?? null,
+      );
+    }
+  }
+
   useEffect(() => {
     fetch("/api/status")
       .then((response) => response.json())
@@ -1213,11 +1329,15 @@ export default function Home() {
 
     supabase.auth.getSession().then(({ data }) => {
       const token = data.session?.access_token ?? null;
+      const email = data.session?.user.email ?? null;
       setAccessToken(token);
-      setUserEmail(data.session?.user.email ?? null);
+      setUserEmail(email);
       applyUserSettings(data.session?.user.user_metadata);
-      if (token) {
+      if (token && email) {
+        showFirstUnseenOnboarding(email);
         loadMeals(token);
+      } else {
+        setActiveOnboardingId(null);
       }
     });
 
@@ -1225,16 +1345,20 @@ export default function Home() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       const token = session?.access_token ?? null;
+      const email = session?.user.email ?? null;
       setAccessToken(token);
-      setUserEmail(session?.user.email ?? null);
+      setUserEmail(email);
       applyUserSettings(session?.user.user_metadata);
-      if (token) {
+      if (token && email) {
+        showFirstUnseenOnboarding(email);
         loadMeals(token);
       } else {
+        setActiveOnboardingId(null);
         setDraftHiddenCoreNutrients([]);
         setDraftNutrientOrder([]);
         setDraftTrackedNutrients([]);
         setHiddenCoreNutrients([]);
+        setInstallHelpOpen(false);
         setMeals([]);
         setNutrientOrder([]);
         setPendingMealSubmissions([]);
@@ -1251,6 +1375,17 @@ export default function Home() {
     // Auth bootstrap should only follow this Supabase client instance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]);
+
+  useEffect(() => {
+    const displayModeQuery = window.matchMedia("(display-mode: standalone)");
+    const updateStandaloneMode = () =>
+      setIsStandaloneApp(isRunningStandalone());
+
+    displayModeQuery.addEventListener("change", updateStandaloneMode);
+
+    return () =>
+      displayModeQuery.removeEventListener("change", updateStandaloneMode);
+  }, []);
 
   useEffect(() => {
     if (!accessToken) {
@@ -1310,7 +1445,12 @@ export default function Home() {
   );
 
   useEffect(() => {
-    if (!settingsOpen && !analyticsOpen) {
+    if (
+      !settingsOpen &&
+      !analyticsOpen &&
+      !activeOnboardingId &&
+      !installHelpOpen
+    ) {
       return;
     }
 
@@ -1323,13 +1463,15 @@ export default function Home() {
       document.body.style.overflow = previousBodyOverflow;
       document.documentElement.style.overflow = previousDocumentOverflow;
     };
-  }, [analyticsOpen, settingsOpen]);
+  }, [activeOnboardingId, analyticsOpen, installHelpOpen, settingsOpen]);
 
   const missingConfig = status
     ? Object.entries(status.configured)
         .filter(([, configured]) => !configured)
         .map(([name]) => name)
     : [];
+  const activeOnboardingAnnouncement =
+    onboardingAnnouncements.find(({ id }) => id === activeOnboardingId) ?? null;
 
   function closeSettings() {
     setSettingsOpen(false);
@@ -2852,6 +2994,10 @@ export default function Home() {
                 aria-label="Open settings"
                 className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm ${
                   settingsOpen ? "ring-4 ring-emerald-100" : ""
+                } ${
+                  activeOnboardingAnnouncement?.target === "settings"
+                    ? "pointer-events-none relative z-[80] ring-4 ring-emerald-300"
+                    : ""
                 }`}
                 onClick={() => (settingsOpen ? closeSettings() : openSettings())}
                 title="Settings"
@@ -2896,6 +3042,19 @@ export default function Home() {
                           Log out
                         </button>
                       </div>
+                      {!isStandaloneApp ? (
+                        <button
+                          className="mt-3 flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700"
+                          onClick={() => {
+                            setAccountMenuOpen(false);
+                            setInstallHelpOpen(true);
+                          }}
+                          type="button"
+                        >
+                          <ShareIcon />
+                          Add to Home Screen
+                        </button>
+                      ) : null}
                       <form
                         className="mt-3 border-t border-slate-100 pt-3"
                         onSubmit={saveUserProfile}
@@ -3115,10 +3274,14 @@ export default function Home() {
           <>
             <div className="grid grid-cols-2 gap-3">
               <button
-                className={`rounded-full px-5 py-3 text-sm font-semibold ${
+                className={`rounded-full border px-5 py-3 text-sm font-semibold ${
                   activeForm === "meal"
-                    ? "bg-emerald-500 text-white"
-                    : "bg-white text-slate-950 shadow-sm"
+                    ? "border-emerald-500 bg-emerald-500 text-white"
+                    : "border-emerald-500 bg-white text-emerald-700"
+                } ${
+                  activeOnboardingAnnouncement?.target === "meal"
+                    ? "pointer-events-none relative z-[80] ring-4 ring-emerald-300"
+                    : ""
                 }`}
                 onClick={() =>
                   setActiveForm(activeForm === "meal" ? null : "meal")
@@ -3128,10 +3291,10 @@ export default function Home() {
                 + Meal
               </button>
               <button
-                className={`rounded-full px-5 py-3 text-sm font-semibold ${
+                className={`rounded-full border px-5 py-3 text-sm font-semibold ${
                   activeForm === "symptom"
-                    ? "bg-rose-500 text-white"
-                    : "bg-white text-slate-950 shadow-sm"
+                    ? "border-rose-500 bg-rose-500 text-white"
+                    : "border-rose-500 bg-white text-rose-600"
                 }`}
                 onClick={() =>
                   setActiveForm(activeForm === "symptom" ? null : "symptom")
@@ -3290,7 +3453,7 @@ export default function Home() {
                             Day total
                           </p>
                           {renderNutrientGrid({
-                            className: "mt-2 text-emerald-700",
+                            className: "mt-2",
                             customNutrients: getCustomNutrientItems(
                               group.meals,
                               trackedNutrients,
@@ -3309,6 +3472,113 @@ export default function Home() {
           </>
         )}
       </div>
+      {accessToken && activeOnboardingAnnouncement ? (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center overscroll-contain bg-slate-950/50 p-4">
+          <button
+            aria-label="Dismiss onboarding message"
+            className="absolute inset-0 h-full w-full cursor-default"
+            onClick={dismissActiveOnboarding}
+            type="button"
+          />
+          <section
+            aria-labelledby="onboarding-title"
+            aria-modal="true"
+            className="relative z-10 w-full max-w-lg rounded-3xl bg-white p-6 shadow-xl"
+            role="dialog"
+          >
+            <h2
+              className="text-2xl font-semibold tracking-tight"
+              id="onboarding-title"
+            >
+              {activeOnboardingAnnouncement.title}
+            </h2>
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-bold text-emerald-800">
+                {activeOnboardingAnnouncement.target === "settings" ? (
+                  <SettingsIcon />
+                ) : null}
+                {activeOnboardingAnnouncement.targetLabel}
+              </span>
+            </div>
+            <p className="mt-3 text-sm leading-7 text-slate-600">
+              {activeOnboardingAnnouncement.message}
+            </p>
+            <button
+              className="mt-5 w-full rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+              onClick={dismissActiveOnboarding}
+              type="button"
+            >
+              Continue
+            </button>
+          </section>
+        </div>
+      ) : null}
+      {accessToken && installHelpOpen ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center overscroll-contain bg-slate-950/50 p-4">
+          <button
+            aria-label="Close Add to Home Screen instructions"
+            className="absolute inset-0 h-full w-full cursor-default"
+            onClick={() => setInstallHelpOpen(false)}
+            type="button"
+          />
+          <section
+            aria-labelledby="install-help-title"
+            aria-modal="true"
+            className="relative z-10 w-full max-w-md rounded-3xl bg-white p-6 shadow-xl"
+            role="dialog"
+          >
+            <h2
+              className="text-2xl font-semibold tracking-tight"
+              id="install-help-title"
+            >
+              Add to Home Screen
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              On your iPhone, follow these steps to open Diet Tracker like an
+              app.
+            </p>
+            <ol className="mt-5 space-y-3">
+              <li className="flex gap-3 rounded-2xl bg-slate-50 p-3">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-950 text-xs font-semibold text-white">
+                  1
+                </span>
+                <p className="text-sm leading-6 text-slate-700">
+                  Press the <strong>•••</strong> icon in the bottom-right
+                  corner of Safari.
+                </p>
+              </li>
+              <li className="flex gap-3 rounded-2xl bg-slate-50 p-3">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-950 text-xs font-semibold text-white">
+                  2
+                </span>
+                <p className="text-sm leading-6 text-slate-700">
+                  Tap the{" "}
+                  <span className="inline-flex items-center gap-1 font-semibold text-slate-950">
+                    Share <ShareIcon />
+                  </span>{" "}
+                  button.
+                </p>
+              </li>
+              <li className="flex gap-3 rounded-2xl bg-slate-50 p-3">
+                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-950 text-xs font-semibold text-white">
+                  3
+                </span>
+                <p className="text-sm leading-6 text-slate-700">
+                  Scroll down and tap <strong>Add to Home Screen</strong>, then
+                  tap <strong>Add</strong>.
+                </p>
+              </li>
+            </ol>
+            <button
+              className="mt-5 w-full rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+              onClick={() => setInstallHelpOpen(false)}
+              type="button"
+            >
+              Done
+            </button>
+          </section>
+        </div>
+      ) : null}
       {accessToken && settingsOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-slate-950/40 p-4">
           <button
