@@ -26,6 +26,26 @@ export const mealPhotoSchema = z.object({
   fileName: z.string().optional(),
 });
 
+export const mealSubmissionStatusSchema = z.enum([
+  "processing",
+  "ready",
+  "failed",
+]);
+
+export const mealSubmissionSchema = z.object({
+  id: z.string().uuid(),
+  status: mealSubmissionStatusSchema,
+  submittedAt: z.string().datetime(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  completedAt: z.string().datetime().optional(),
+  description: z.string(),
+  eatenAt: z.string().datetime().optional(),
+  restaurantLink: z.string().url().optional(),
+  photos: z.array(mealPhotoSchema).default([]),
+  errorMessage: z.string().optional(),
+});
+
 export const trackedNutrientSchema = z.object({
   name: z.string().trim().min(1),
   unit: z.string().trim().min(1),
@@ -161,6 +181,8 @@ export const reportSummarySchema = z.object({
 });
 
 export type MacroTotals = z.infer<typeof macroSchema>;
+export type MealSubmission = z.infer<typeof mealSubmissionSchema>;
+export type MealSubmissionStatus = z.infer<typeof mealSubmissionStatusSchema>;
 export type NutritionEstimate = z.infer<typeof nutritionEstimateSchema>;
 export type TrackedNutrient = z.infer<typeof trackedNutrientSchema>;
 export type MealRecord = z.infer<typeof mealRecordSchema>;

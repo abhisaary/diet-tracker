@@ -63,6 +63,8 @@ Supabase is the source of truth:
 - `meals`: meal descriptions, timestamps, ordered photo path arrays, nutrition
   estimates, assumptions, and optional correction fields. Legacy single-photo
   columns remain populated for compatibility.
+- `meal_submissions`: durable processing state for meal estimates, allowing
+  interrupted clients to reconnect without showing a false failure.
 - `symptoms`: independent timestamped symptom notes with severity, tags, and
   optional duration.
 - `meal-photos`: private storage bucket for uploaded meal photos. A meal can

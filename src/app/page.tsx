@@ -11,7 +11,12 @@ import {
 } from "react";
 
 import { CURRENT_PLANT_VARIETY_VERSION } from "@/lib/plant-variety-rules";
-import type { MealRecord, MacroTotals, TrackedNutrient } from "@/lib/schemas";
+import type {
+  MealRecord,
+  MealSubmission,
+  MacroTotals,
+  TrackedNutrient,
+} from "@/lib/schemas";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
 
 type AppStatus = {
@@ -26,12 +31,6 @@ type CoreMacroKey = keyof MacroTotals;
 type CustomNutrientItem = TrackedNutrient & {
   amount: number;
   estimatedMeals: number;
-};
-type PendingMealSubmission = {
-  createdAt: string;
-  description: string;
-  id: string;
-  status: "error" | "processing";
 };
 type MealPhotoDraft = {
   file: File;
@@ -244,6 +243,12 @@ function logClientMealLatency({
 function waitForNextPaint() {
   return new Promise<void>((resolve) => {
     window.requestAnimationFrame(() => resolve());
+  });
+}
+
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, milliseconds);
   });
 }
 
@@ -1162,6 +1167,7 @@ export default function Home() {
   const installOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
   const plantBackfillRunning = useRef(false);
   const mealOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
+  const mealLoadSequenceRef = useRef(0);
   const onboardingModalRef = useRef<HTMLElement | null>(null);
   const settingsOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
@@ -1195,7 +1201,7 @@ export default function Home() {
   const [newTrackedNutrient, setNewTrackedNutrient] = useState("");
   const [nutrientOrder, setNutrientOrder] = useState<string[]>([]);
   const [pendingMealSubmissions, setPendingMealSubmissions] = useState<
-    PendingMealSubmission[]
+    MealSubmission[]
   >([]);
   const [profile, setProfile] = useState<UserProfile>(defaultUserProfile);
   const [profilePending, setProfilePending] = useState(false);
@@ -1456,6 +1462,44 @@ export default function Home() {
     // Resume reconciliation should only restart when the authenticated token changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessToken]);
+
+  const hasProcessingMealSubmissions = pendingMealSubmissions.some(
+    (submission) => submission.status === "processing",
+  );
+
+  useEffect(() => {
+    if (!accessToken || !hasProcessingMealSubmissions) {
+      return;
+    }
+
+    let polling = false;
+
+    async function pollMealSubmissions() {
+      if (polling || document.visibilityState !== "visible") {
+        return;
+      }
+
+      polling = true;
+
+      try {
+        await loadMeals(accessToken, false);
+      } catch (error) {
+        console.error("Could not refresh processing meals:", error);
+      } finally {
+        polling = false;
+      }
+    }
+
+    const firstPoll = window.setTimeout(pollMealSubmissions, 1_000);
+    const pollInterval = window.setInterval(pollMealSubmissions, 4_000);
+
+    return () => {
+      window.clearTimeout(firstPoll);
+      window.clearInterval(pollInterval);
+    };
+    // Polling should restart only when authentication or processing state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accessToken, hasProcessingMealSubmissions]);
 
   useEffect(() => {
     if (!message) {
@@ -1860,28 +1904,53 @@ export default function Home() {
     }
   }
 
+  function upsertMealSubmission(submission: MealSubmission) {
+    setPendingMealSubmissions((current) => [
+      submission,
+      ...current.filter((item) => item.id !== submission.id),
+    ]);
+  }
+
   async function loadMeals(token = accessToken, shouldBackfillPlants = true) {
     if (!token) {
       return;
     }
 
-    const response = await fetch("/api/meals?backfillMissing=1", {
+    const loadSequence = mealLoadSequenceRef.current + 1;
+    mealLoadSequenceRef.current = loadSequence;
+    const query = shouldBackfillPlants ? "?backfillMissing=1" : "";
+    const response = await fetch(`/api/meals${query}`, {
       headers: {
         Authorization: `Bearer ${token}`,
       },
     });
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
       throw new Error(data.error ?? "Could not load meals.");
     }
 
+    if (loadSequence !== mealLoadSequenceRef.current) {
+      return;
+    }
+
     const nextMeals = data.meals as MealRecord[];
+    const storedSubmissions = (data.submissions ?? []) as MealSubmission[];
     setMeals(nextMeals);
     const storedMealIds = new Set(nextMeals.map((meal) => meal.id));
-    setPendingMealSubmissions((current) =>
-      current.filter((meal) => !storedMealIds.has(meal.id)),
+    const storedSubmissionIds = new Set(
+      storedSubmissions.map((submission) => submission.id),
     );
+    setPendingMealSubmissions((current) => [
+      ...storedSubmissions.filter(
+        (submission) => !storedMealIds.has(submission.id),
+      ),
+      ...current.filter(
+        (submission) =>
+          !storedMealIds.has(submission.id) &&
+          !storedSubmissionIds.has(submission.id),
+      ),
+    ]);
 
     if (
       shouldBackfillPlants &&
@@ -2023,6 +2092,32 @@ export default function Home() {
     }
   }
 
+  async function dismissMealSubmission(submissionId: string) {
+    try {
+      const response = await authenticatedFetch("/api/meals", {
+        body: JSON.stringify({ id: submissionId, submission: true }),
+        headers: {
+          "Content-Type": "application/json",
+        },
+        method: "DELETE",
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Could not dismiss meal.");
+      }
+
+      setPendingMealSubmissions((current) =>
+        current.filter((submission) => submission.id !== submissionId),
+      );
+    } catch (error) {
+      showMessage({
+        kind: "error",
+        text: error instanceof Error ? error.message : "Could not dismiss meal.",
+      });
+    }
+  }
+
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAuthPending(true);
@@ -2093,6 +2188,10 @@ export default function Home() {
     setMealPending(true);
     setMessage(null);
     let pendingMealId: string | null = null;
+    let requestStarted = false;
+    let failureConfirmed = false;
+    let persistedFailureReceived = false;
+    let uploadedPhotos: UploadedMealPhoto[] = [];
 
     try {
       const form = event.currentTarget;
@@ -2122,11 +2221,15 @@ export default function Home() {
       }
 
       pendingMealId = crypto.randomUUID();
-      const pendingMeal: PendingMealSubmission = {
-        createdAt: new Date().toISOString(),
+      const submittedAt = new Date().toISOString();
+      const pendingMeal: MealSubmission = {
+        createdAt: submittedAt,
         description: description || "Image-only meal",
         id: pendingMealId,
+        photos: [],
         status: "processing",
+        submittedAt,
+        updatedAt: submittedAt,
       };
 
       setPendingMealSubmissions((current) => [pendingMeal, ...current]);
@@ -2160,21 +2263,33 @@ export default function Home() {
         performance.now() - uploadStartedAt,
       );
       latencyStages.photoUploadsMs = uploadResult.uploadDurationsMs;
-      const uploadedPhotos = uploadResult.photos;
+      uploadedPhotos = uploadResult.photos;
       const apiStartedAt = performance.now();
-      const response = await authenticatedFetch("/api/meals", {
-        body: JSON.stringify({
-          clientMealId: pendingMealId,
-          description,
-          photos: uploadedPhotos,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        }),
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          "Content-Type": "application/json",
-        },
-        method: "POST",
+      requestStarted = true;
+      const mealRequestBody = JSON.stringify({
+        clientMealId: pendingMealId,
+        description,
+        photos: uploadedPhotos,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
+      const sendMealRequest = () =>
+        authenticatedFetch("/api/meals", {
+          body: mealRequestBody,
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+        });
+      let response: Response;
+
+      try {
+        response = await sendMealRequest();
+      } catch {
+        latencyMetadata.transportRetries = 1;
+        await wait(1_500);
+        response = await sendMealRequest();
+      }
       latencyStages.apiRequestMs = roundMilliseconds(
         performance.now() - apiStartedAt,
       );
@@ -2186,21 +2301,29 @@ export default function Home() {
       latencyStages.responseParseMs = roundMilliseconds(
         performance.now() - responseParseStartedAt,
       );
+      const storedSubmission = data.submission as MealSubmission | undefined;
+
+      if (storedSubmission) {
+        upsertMealSubmission(storedSubmission);
+      }
 
       if (!response.ok) {
-        const cleanupStartedAt = performance.now();
-        await removeUploadedMealPhotos(uploadedPhotos);
-        latencyStages.photoCleanupMs = roundMilliseconds(
-          performance.now() - cleanupStartedAt,
-        );
+        failureConfirmed = true;
+        persistedFailureReceived = storedSubmission?.status === "failed";
+
+        if (!storedSubmission) {
+          const cleanupStartedAt = performance.now();
+          await removeUploadedMealPhotos(uploadedPhotos);
+          latencyStages.photoCleanupMs = roundMilliseconds(
+            performance.now() - cleanupStartedAt,
+          );
+        }
+
         throw new Error(data.error ?? "Could not log meal.");
       }
 
-      setPendingMealSubmissions((current) =>
-        current.filter((meal) => meal.id !== pendingMealId),
-      );
       const refreshStartedAt = performance.now();
-      await loadMeals();
+      await loadMeals(undefined, response.status !== 202);
       latencyStages.refreshMs = roundMilliseconds(
         performance.now() - refreshStartedAt,
       );
@@ -2217,7 +2340,10 @@ export default function Home() {
         totalMs: roundMilliseconds(performance.now() - latencyStartedAt),
       });
       latencyLogged = true;
-      showMessage({ kind: "success", text: "Meal saved." });
+
+      if (response.status !== 202) {
+        showMessage({ kind: "success", text: "Meal saved." });
+      }
     } catch (error) {
       if (!latencyLogged) {
         logClientMealLatency({
@@ -2229,17 +2355,36 @@ export default function Home() {
         });
         latencyLogged = true;
       }
-      if (pendingMealId) {
+
+      if (
+        pendingMealId &&
+        (!requestStarted || failureConfirmed) &&
+        !persistedFailureReceived
+      ) {
+        const errorMessage =
+          error instanceof Error ? error.message : "Could not log meal.";
         setPendingMealSubmissions((current) =>
           current.map((meal) =>
-            meal.id === pendingMealId ? { ...meal, status: "error" } : meal,
+            meal.id === pendingMealId
+              ? {
+                  ...meal,
+                  errorMessage,
+                  status: "failed",
+                  updatedAt: new Date().toISOString(),
+                }
+              : meal,
           ),
         );
       }
-      showMessage({
-        kind: "error",
-        text: error instanceof Error ? error.message : "Could not log meal.",
-      });
+
+      if (requestStarted && !failureConfirmed) {
+        void loadMeals(undefined, false).catch(() => undefined);
+      } else {
+        showMessage({
+          kind: "error",
+          text: error instanceof Error ? error.message : "Could not log meal.",
+        });
+      }
     } finally {
       setMealPending(false);
     }
@@ -2747,8 +2892,8 @@ export default function Home() {
     );
   }
 
-  function renderPendingMealCard(meal: PendingMealSubmission) {
-    const isError = meal.status === "error";
+  function renderPendingMealCard(meal: MealSubmission) {
+    const isError = meal.status === "failed";
 
     return (
       <article
@@ -2775,11 +2920,7 @@ export default function Home() {
           {isError ? (
             <button
               className="rounded-full px-2 py-1 text-xs font-semibold text-red-600"
-              onClick={() =>
-                setPendingMealSubmissions((current) =>
-                  current.filter((pendingMeal) => pendingMeal.id !== meal.id),
-                )
-              }
+              onClick={() => void dismissMealSubmission(meal.id)}
               type="button"
             >
               Dismiss

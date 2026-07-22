@@ -5,10 +5,17 @@ import { CURRENT_PLANT_VARIETY_VERSION } from "@/lib/plant-variety-rules";
 import {
   macroSchema,
   mealRecordSchema,
+  mealSubmissionSchema,
   nutritionEstimateSchema,
   symptomRecordSchema,
 } from "@/lib/schemas";
-import type { MealRecord, NutritionEstimate, SymptomRecord } from "@/lib/schemas";
+import type {
+  MealRecord,
+  MealSubmission,
+  MealSubmissionStatus,
+  NutritionEstimate,
+  SymptomRecord,
+} from "@/lib/schemas";
 
 type MealRow = {
   id: string;
@@ -24,6 +31,23 @@ type MealRow = {
   nutrition: unknown;
   corrected_nutrition: unknown | null;
   correction_note: string | null;
+};
+
+type MealSubmissionRow = {
+  id: string;
+  user_id: string;
+  status: string;
+  submitted_at: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  description: string;
+  eaten_at: string | null;
+  restaurant_link: string | null;
+  timezone: string | null;
+  photo_paths: string[];
+  photo_file_names: string[];
+  error_message: string | null;
 };
 
 type SymptomRow = {
@@ -161,6 +185,27 @@ function toMealRecord(row: MealRow): MealRecord {
   });
 }
 
+function toMealSubmission(row: MealSubmissionRow): MealSubmission {
+  return mealSubmissionSchema.parse({
+    completedAt: row.completed_at
+      ? toIsoString(row.completed_at)
+      : undefined,
+    createdAt: toIsoString(row.created_at),
+    description: row.description,
+    eatenAt: row.eaten_at ? toIsoString(row.eaten_at) : undefined,
+    errorMessage: row.error_message ?? undefined,
+    id: row.id,
+    photos: row.photo_paths.map((fileId, index) => ({
+      fileId,
+      fileName: row.photo_file_names[index] || undefined,
+    })),
+    restaurantLink: row.restaurant_link ?? undefined,
+    status: row.status,
+    submittedAt: toIsoString(row.submitted_at),
+    updatedAt: toIsoString(row.updated_at),
+  });
+}
+
 function toSymptomRecord(row: SymptomRow): SymptomRecord {
   return symptomRecordSchema.parse({
     createdAt: toIsoString(row.created_at),
@@ -208,6 +253,62 @@ export async function getMeal(
   }
 
   return toMealRecord(data as MealRow);
+}
+
+export async function getMealIfExists(
+  supabase: SupabaseClient,
+  userId: string,
+  mealId: string,
+): Promise<MealRecord | null> {
+  const { data, error } = await supabase
+    .from("meals")
+    .select("*")
+    .eq("id", mealId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ? toMealRecord(data as MealRow) : null;
+}
+
+export async function listActiveMealSubmissions(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<MealSubmission[]> {
+  const { data, error } = await supabase
+    .from("meal_submissions")
+    .select("*")
+    .eq("user_id", userId)
+    .in("status", ["processing", "failed"])
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return ((data ?? []) as MealSubmissionRow[]).map(toMealSubmission);
+}
+
+export async function getMealSubmission(
+  supabase: SupabaseClient,
+  userId: string,
+  submissionId: string,
+): Promise<MealSubmission | null> {
+  const { data, error } = await supabase
+    .from("meal_submissions")
+    .select("*")
+    .eq("id", submissionId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ? toMealSubmission(data as MealSubmissionRow) : null;
 }
 
 export async function downloadMealPhoto(
@@ -335,6 +436,150 @@ export async function uploadMealPhotos({
   return uploadedPhotos;
 }
 
+export async function createMealSubmission({
+  description,
+  eatenAt,
+  id,
+  photos = [],
+  restaurantLink,
+  submittedAt,
+  supabase,
+  timezone,
+  userId,
+}: {
+  description: string;
+  eatenAt?: string;
+  id: string;
+  photos?: MealSubmission["photos"];
+  restaurantLink?: string;
+  submittedAt: string;
+  supabase: SupabaseClient;
+  timezone?: string;
+  userId: string;
+}): Promise<{ created: boolean; submission: MealSubmission }> {
+  const { data, error } = await supabase
+    .from("meal_submissions")
+    .insert({
+      description,
+      eaten_at: eatenAt ?? null,
+      id,
+      photo_file_names: photos.map((photo) => photo.fileName ?? ""),
+      photo_paths: photos.map((photo) => photo.fileId),
+      restaurant_link: restaurantLink ?? null,
+      status: "processing",
+      submitted_at: submittedAt,
+      timezone: timezone ?? null,
+      user_id: userId,
+    })
+    .select("*")
+    .single();
+
+  if (!error && data) {
+    return {
+      created: true,
+      submission: toMealSubmission(data as MealSubmissionRow),
+    };
+  }
+
+  if (error?.code === "23505") {
+    const existingSubmission = await getMealSubmission(supabase, userId, id);
+
+    if (existingSubmission) {
+      return { created: false, submission: existingSubmission };
+    }
+  }
+
+  throw new Error(error?.message ?? "Could not create meal submission.");
+}
+
+export async function updateMealSubmissionStatus({
+  errorMessage,
+  expectedStatus,
+  id,
+  status,
+  supabase,
+  userId,
+}: {
+  errorMessage?: string;
+  expectedStatus?: MealSubmissionStatus;
+  id: string;
+  status: MealSubmissionStatus;
+  supabase: SupabaseClient;
+  userId: string;
+}): Promise<MealSubmission> {
+  const completedAt = status === "processing" ? null : new Date().toISOString();
+  let query = supabase
+    .from("meal_submissions")
+    .update({
+      completed_at: completedAt,
+      error_message: errorMessage ?? null,
+      status,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId);
+
+  if (expectedStatus) {
+    query = query.eq("status", expectedStatus);
+  }
+
+  const { data, error } = await query
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (data) {
+    return toMealSubmission(data as MealSubmissionRow);
+  }
+
+  const existingSubmission = await getMealSubmission(supabase, userId, id);
+
+  if (!existingSubmission) {
+    throw new Error("Meal submission no longer exists.");
+  }
+
+  return existingSubmission;
+}
+
+export async function deleteMealSubmission({
+  id,
+  supabase,
+  userId,
+}: {
+  id: string;
+  supabase: SupabaseClient;
+  userId: string;
+}) {
+  const submission = await getMealSubmission(supabase, userId, id);
+
+  if (!submission) {
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from("meal_submissions")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("id");
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data?.length) {
+    throw new Error("Meal submission was not deleted.");
+  }
+
+  await removeMealPhotos(
+    supabase,
+    submission.photos.map((photo) => photo.fileId),
+  ).catch(() => undefined);
+}
+
 export async function insertMeal({
   correctedNutrition,
   correctionNote,
@@ -375,6 +620,42 @@ export async function insertMeal({
       user_id: userId,
     })
     .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return toMealRecord(data as MealRow);
+}
+
+export async function completeMealSubmission({
+  description,
+  eatenAt,
+  id,
+  nutrition,
+  photos = [],
+  restaurantLink,
+  supabase,
+}: {
+  description: string;
+  eatenAt: string;
+  id: string;
+  nutrition: NutritionEstimate;
+  photos?: { fileId: string; fileName: string }[];
+  restaurantLink?: string;
+  supabase: SupabaseClient;
+}) {
+  const { data, error } = await supabase
+    .rpc("complete_meal_submission", {
+      p_description: description,
+      p_eaten_at: eatenAt,
+      p_id: id,
+      p_nutrition: nutrition,
+      p_photo_file_names: photos.map((photo) => photo.fileName),
+      p_photo_paths: photos.map((photo) => photo.fileId),
+      p_restaurant_link: restaurantLink ?? null,
+    })
     .single();
 
   if (error) {
