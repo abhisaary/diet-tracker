@@ -3563,21 +3563,18 @@ export default function Home() {
                   name="description"
                   placeholder="What did you eat? Optional if adding an image."
                 />
-                <label className="mt-3 block text-sm font-medium text-slate-700">
-                  Meal photos
-                  <span className="mt-1 block text-xs font-normal leading-5 text-slate-500">
-                    Take or choose photos one at a time. Each new selection is
-                    added to this meal.
-                  </span>
-                  <input
-                    accept="image/*"
-                    className="mt-2 block w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm disabled:opacity-50"
-                    disabled={mealPhotos.length >= maxMealPhotos}
-                    multiple
-                    onChange={addMealPhotos}
-                    type="file"
-                  />
-                </label>
+                {mealPhotos.length < maxMealPhotos ? (
+                  <label className="mt-3 flex w-full cursor-pointer items-center justify-center rounded-full border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
+                    <input
+                      accept="image/*"
+                      className="sr-only"
+                      multiple
+                      onChange={addMealPhotos}
+                      type="file"
+                    />
+                    {mealPhotos.length > 0 ? "Add more photos" : "Add photos"}
+                  </label>
+                ) : null}
                 {mealPhotos.length > 0 ? (
                   <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
                     <div className="flex items-center justify-between gap-3">
