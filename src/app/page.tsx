@@ -2861,10 +2861,6 @@ export default function Home() {
 
     return {
       chartPoints,
-      chartWidthPercent: Math.max(
-        35,
-        (chartPoints.length / points.length) * 100,
-      ),
       current: points[points.length - 1].snapshot,
     };
   }, [meals, todayDayKey]);
@@ -3178,10 +3174,15 @@ export default function Home() {
       top: 4,
       width: 296,
     };
-    const yMax = Math.max(5, Math.ceil(Math.max(...values) * 1.15));
+    const plantDiversityReference = 30;
+    const yMax = Math.max(
+      40,
+      Math.ceil(Math.max(...values, plantDiversityReference) * 1.15),
+    );
     const xStep = bounds.width / Math.max(points.length - 1, 1);
     const yForValue = (value: number) =>
       bounds.bottom - Math.min(Math.max(value, 0), yMax) * (bounds.height / yMax);
+    const referenceY = yForValue(plantDiversityReference);
     const chartPoints = points.flatMap((point, index) =>
       point.value === null
         ? []
@@ -3207,6 +3208,14 @@ export default function Home() {
         role="img"
         viewBox="0 0 300 64"
       >
+        <rect
+          fill="#10b981"
+          fillOpacity="0.14"
+          height={referenceY - bounds.top}
+          width={bounds.width}
+          x={bounds.left}
+          y={bounds.top}
+        />
         <line
           className="stroke-slate-200"
           vectorEffect="non-scaling-stroke"
@@ -4405,7 +4414,7 @@ export default function Home() {
         </div>
       ) : null}
       {accessToken && analyticsOpen ? (
-        <div className="fixed inset-x-0 bottom-0 top-16 z-50 flex items-start justify-center overscroll-contain bg-slate-950/40 p-4">
+        <div className="fixed inset-0 z-50 flex items-start justify-center overscroll-contain bg-slate-950/40 px-4 pb-4 pt-20">
           <button
             aria-label="Close trends"
             className="absolute inset-0 h-full w-full cursor-default"
@@ -4473,22 +4482,54 @@ export default function Home() {
                 Weekly plant diversity
               </h3>
               <div className="mt-2 flex items-center gap-4">
-                <p className="w-20 shrink-0 text-4xl font-semibold text-emerald-700">
-                  {plantDiversityAnalysis.current.score.toFixed(1)}
-                </p>
-                <div className="flex min-w-0 flex-1 items-center">
-                  <div
-                    className="min-w-28 max-w-full rounded-xl bg-slate-50 px-2 py-1"
-                    style={{
-                      width: `${plantDiversityAnalysis.chartWidthPercent}%`,
-                    }}
-                  >
-                    {renderPlantDiversityChart(
-                      plantDiversityAnalysis.chartPoints,
-                    )}
-                  </div>
+                <div className="w-20 shrink-0">
+                  <p className="text-4xl font-semibold text-emerald-700">
+                    {plantDiversityAnalysis.current.score.toFixed(1)}
+                  </p>
+                  <p className="text-[9px] uppercase tracking-wide text-slate-400">
+                    recency score
+                  </p>
+                </div>
+                <div className="min-w-0 flex-1 rounded-xl bg-slate-50 px-2 py-1">
+                  {renderPlantDiversityChart(
+                    plantDiversityAnalysis.chartPoints,
+                  )}
                 </div>
               </div>
+
+              {thirtyDayLoggedDays > 0 ? (
+                <div className="mt-3 flex items-center gap-4 rounded-2xl border border-slate-200 px-3 py-2">
+                  <div className="w-24 shrink-0">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                      Fiber
+                    </p>
+                    <p
+                      className={`text-base ${getRangeTextClass(
+                        getRangeStatus(
+                          thirtyDayAverageMacros.fiberGrams,
+                          fiberChartReference.minGrams,
+                          fiberChartReference.maxGrams,
+                        ),
+                      )}`}
+                    >
+                      {Math.round(thirtyDayAverageMacros.fiberGrams)}g
+                    </p>
+                    <p className="text-[9px] text-slate-400">30d daily avg</p>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    {renderMiniTrendChart({
+                      points: sevenDayMacroRows.map((row) => ({
+                        dayKey: row.dayKey,
+                        value:
+                          row.mealCount > 0 ? row.macros.fiberGrams : null,
+                      })),
+                      referenceMax: fiberChartReference.maxGrams,
+                      referenceMin: fiberChartReference.minGrams,
+                      strokeColor: fiberChartReference.strokeColor,
+                    })}
+                  </div>
+                </div>
+              ) : null}
 
               <details className="mt-3 rounded-2xl border border-slate-200">
                 <summary className="cursor-pointer px-3 py-2.5 text-sm font-semibold text-slate-700">
