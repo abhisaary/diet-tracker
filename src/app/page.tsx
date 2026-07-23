@@ -3,7 +3,6 @@
 import {
   ChangeEvent,
   FormEvent,
-  type ReactNode,
   useEffect,
   useMemo,
   useRef,
@@ -315,6 +314,57 @@ function formatMealTimeOfDay(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function getMinutesOfDay(value: string) {
+  const date = new Date(value);
+
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function getAverage(values: number[]) {
+  return values.length > 0
+    ? values.reduce((total, value) => total + value, 0) / values.length
+    : null;
+}
+
+function getCircularMeanMinutes(values: number[]) {
+  if (values.length === 0) {
+    return null;
+  }
+
+  const radians = values.map((value) => (value / (24 * 60)) * Math.PI * 2);
+  const meanSine = getAverage(radians.map(Math.sin)) ?? 0;
+  const meanCosine = getAverage(radians.map(Math.cos)) ?? 0;
+  const angle = Math.atan2(meanSine, meanCosine);
+
+  return (((angle < 0 ? angle + Math.PI * 2 : angle) / (Math.PI * 2)) * 24 * 60);
+}
+
+function formatClockMinutes(value: number | null) {
+  if (value === null) {
+    return "--";
+  }
+
+  const roundedMinutes = Math.round(value / 5) * 5;
+  const date = new Date(2000, 0, 1, 0, roundedMinutes);
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function formatDurationMinutes(value: number | null) {
+  if (value === null) {
+    return "--";
+  }
+
+  const roundedMinutes = Math.round(value / 5) * 5;
+  const hours = Math.floor(roundedMinutes / 60);
+  const minutes = roundedMinutes % 60;
+
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
 function formatPrimaryIngredientAmount(amount: string) {
@@ -2503,12 +2553,163 @@ export default function Home() {
       dayKey,
       macros,
       mealCount: dayMeals.length,
-      percents: macroCalorieReferences.map((reference) => ({
-        ...reference,
-        percent: getMacroCaloriePercent(macros, reference.key),
-      })),
     };
   });
+  const thirtyDayChrononutritionDays = thirtyDayMealsByDay.map((group) => {
+    const mealsByTime = [...group.meals].sort(
+      (first, second) =>
+        new Date(first.eatenAt).getTime() - new Date(second.eatenAt).getTime(),
+    );
+    const mealTimes = mealsByTime.map((meal) =>
+      new Date(meal.eatenAt).getTime(),
+    );
+    const firstMeal = mealsByTime[0];
+    const lastMeal = mealsByTime[mealsByTime.length - 1];
+    const gaps = mealTimes.slice(1).map((time, index) => {
+      const previousTime = mealTimes[index];
+
+      return previousTime === undefined ? 0 : (time - previousTime) / 60_000;
+    });
+
+    return {
+      firstMinutes: firstMeal ? getMinutesOfDay(firstMeal.eatenAt) : null,
+      gaps: gaps.filter((gap) => gap > 0),
+      lastMinutes: lastMeal ? getMinutesOfDay(lastMeal.eatenAt) : null,
+      windowMinutes:
+        mealTimes.length > 1
+          ? (mealTimes[mealTimes.length - 1] - mealTimes[0]) / 60_000
+          : null,
+    };
+  });
+  const firstMealMinutes = thirtyDayChrononutritionDays.flatMap((day) =>
+    day.firstMinutes === null ? [] : [day.firstMinutes],
+  );
+  const lastMealMinutes = thirtyDayChrononutritionDays.flatMap((day) =>
+    day.lastMinutes === null ? [] : [day.lastMinutes],
+  );
+  const eatingWindowMinutes = thirtyDayChrononutritionDays.flatMap((day) =>
+    day.windowMinutes === null ? [] : [day.windowMinutes],
+  );
+  const intermealGapMinutes = thirtyDayChrononutritionDays.flatMap(
+    (day) => day.gaps,
+  );
+  const chrononutritionMetrics = [
+    {
+      detail: "first meal",
+      id: "first-meal",
+      value: formatClockMinutes(getCircularMeanMinutes(firstMealMinutes)),
+    },
+    {
+      detail: "last meal",
+      id: "last-meal",
+      value: formatClockMinutes(getCircularMeanMinutes(lastMealMinutes)),
+    },
+    {
+      detail: "eating window",
+      id: "eating-window",
+      value: formatDurationMinutes(getAverage(eatingWindowMinutes)),
+    },
+    {
+      detail: "between meals",
+      id: "intermeal-gap",
+      value: formatDurationMinutes(getAverage(intermealGapMinutes)),
+    },
+  ];
+  const sevenDayMealTimingRows = sevenDayKeys.map((dayKey) => {
+    const mealMinutes = (mealsByDayKey[dayKey] ?? [])
+      .map((meal) => getMinutesOfDay(meal.eatenAt))
+      .sort((first, second) => first - second);
+
+    return {
+      date: new Date(`${dayKey}T12:00:00`),
+      dayKey,
+      firstMinutes: mealMinutes[0] ?? null,
+      lastMinutes: mealMinutes[mealMinutes.length - 1] ?? null,
+    };
+  });
+  const calorieReference = getCalorieReferenceRange(profile);
+  const proteinReference = proteinReferences[profile.activityLevel];
+  const proteinGramsPerKg = getProteinGramsPerKg(
+    thirtyDayAverageMacros,
+    profile,
+  );
+  const thirtyDayNutritionMetrics = [
+    ...coreMacroItems
+      .filter((macroItem) => !hiddenCoreNutrients.includes(macroItem.key))
+      .map((macroItem) => {
+        const macroReference = macroCalorieReferences.find(
+          (reference) => reference.key === macroItem.key,
+        );
+        const caloriePercent = macroReference
+          ? getMacroCaloriePercent(thirtyDayAverageMacros, macroReference.key)
+          : null;
+        let detail = "daily average";
+        let status: "in-range" | "out-of-range" | "unknown" = "unknown";
+
+        if (macroItem.key === "calories") {
+          detail = calorieReference
+            ? `~${calorieReference.target} target`
+            : "kcal/day";
+          status = calorieReference
+            ? getRangeStatus(
+                thirtyDayAverageMacros.calories,
+                calorieReference.min,
+                calorieReference.max,
+              )
+            : "unknown";
+        } else if (macroItem.key === "proteinGrams") {
+          detail = profile.weightPounds
+            ? formatGramsPerKg(proteinGramsPerKg)
+            : "g/day";
+          status = profile.weightPounds
+            ? getRangeStatus(
+                proteinGramsPerKg,
+                proteinReference.minGramsPerKg,
+                proteinReference.maxGramsPerKg,
+              )
+            : "unknown";
+        } else if (macroItem.key === "fiberGrams") {
+          detail = "g/day";
+          status = getRangeStatus(
+            thirtyDayAverageMacros.fiberGrams,
+            fiberChartReference.minGrams,
+            fiberChartReference.maxGrams,
+          );
+        } else if (macroReference) {
+          detail =
+            caloriePercent === null ? "daily average" : `${caloriePercent}% kcal`;
+          status = getRangeStatus(
+            caloriePercent,
+            macroReference.minPercent,
+            macroReference.maxPercent,
+          );
+        }
+
+        return {
+          detail,
+          id: macroItem.key,
+          label: formatNutrientName(macroItem.label),
+          status,
+          value: macroItem.format(thirtyDayAverageMacros),
+        };
+      }),
+    ...thirtyDayAverageCustomNutrients.map((nutrient) => ({
+      detail:
+        nutrient.unit === "amount" ? "amount/day" : `${nutrient.unit}/day`,
+      id: `${nutrient.name}-${nutrient.unit}`,
+      label: formatNutrientName(nutrient.name),
+      status: "unknown" as const,
+      value:
+        nutrient.estimatedMeals > 0
+          ? formatCustomNutrientAmount(nutrient.amount, nutrient.unit)
+          : "--",
+    })),
+  ];
+  const sevenDayAverageCalories = getAverage(
+    sevenDayMacroRows.flatMap((row) =>
+      row.mealCount > 0 ? [row.macros.calories] : [],
+    ),
+  );
   const plantDiversityAnalysis = useMemo(() => {
     const referenceDate = new Date(`${todayDayKey}T12:00:00`);
     const analyzedMealDays = meals
@@ -2602,57 +2803,6 @@ export default function Home() {
             </p>
           </div>
         ) : null}
-      </div>
-    );
-  }
-
-  function renderNutritionAverageRow({
-    average,
-    averageClassName = "",
-    basis,
-    id,
-    label,
-    reference,
-    trend,
-  }: {
-    average: string;
-    averageClassName?: string;
-    basis: string;
-    id: string;
-    label: string;
-    reference: string;
-    trend: ReactNode;
-  }) {
-    return (
-      <div
-        className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 border-t border-slate-100 px-3 py-2 text-xs sm:grid-cols-[minmax(0,0.9fr)_minmax(5.5rem,0.8fr)_minmax(9rem,1.6fr)_minmax(7rem,1.1fr)] sm:items-center sm:gap-x-4 sm:gap-y-0"
-        key={id}
-      >
-        <div className="min-w-0">
-          <p className="font-medium text-slate-800">{label}</p>
-          <p className="mt-0.5 text-[10px] leading-3 text-slate-500 sm:hidden">
-            <span className="font-semibold text-slate-400">Ref</span>{" "}
-            {reference}
-          </p>
-        </div>
-        <div className="min-w-0 text-right sm:text-left">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:hidden">
-            30d avg
-          </p>
-          <p className={averageClassName}>{average}</p>
-          <p className="text-[10px] leading-3 text-slate-500">{basis}</p>
-        </div>
-        <div className="col-span-2 grid min-w-0 grid-cols-[3.5rem_minmax(0,1fr)] items-center gap-2 sm:col-span-1 sm:block">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 sm:hidden">
-            7d trend
-          </p>
-          <div className="w-full max-w-[220px] justify-self-end sm:max-w-none">
-            {trend}
-          </div>
-        </div>
-        <div className="hidden leading-4 text-slate-500 sm:col-span-1 sm:block">
-          {reference}
-        </div>
       </div>
     );
   }
@@ -2765,6 +2915,120 @@ export default function Home() {
             vectorEffect="non-scaling-stroke"
           />
         ))}
+      </svg>
+    );
+  }
+
+  function renderMealTimingChart(
+    points: {
+      date: Date;
+      dayKey: string;
+      firstMinutes: number | null;
+      lastMinutes: number | null;
+    }[],
+  ) {
+    const bounds = {
+      bottom: 87,
+      left: 34,
+      right: 296,
+      top: 5,
+      width: 262,
+    };
+    const rowHeight = 11;
+    const xForMinutes = (minutes: number) =>
+      bounds.left + (minutes / (24 * 60)) * bounds.width;
+
+    return (
+      <svg
+        aria-label="First to last meal for the last 7 days"
+        className="h-auto w-full overflow-visible"
+        role="img"
+        viewBox="0 0 300 100"
+      >
+        {points.map((point, index) => {
+          const y = bounds.top + index * rowHeight + 4;
+
+          return (
+            <g key={point.dayKey}>
+              <text
+                fill="#94a3b8"
+                fontSize="7"
+                textAnchor="start"
+                x="0"
+                y={y + 2}
+              >
+                {new Intl.DateTimeFormat(undefined, {
+                  weekday: "short",
+                }).format(point.date)}
+              </text>
+              <line
+                stroke="#e2e8f0"
+                strokeLinecap="round"
+                strokeWidth="2"
+                x1={bounds.left}
+                x2={bounds.right}
+                y1={y}
+                y2={y}
+              />
+              {point.firstMinutes !== null && point.lastMinutes !== null ? (
+                <>
+                  <line
+                    stroke="#0ea5e9"
+                    strokeLinecap="round"
+                    strokeWidth="4"
+                    x1={xForMinutes(point.firstMinutes)}
+                    x2={xForMinutes(point.lastMinutes)}
+                    y1={y}
+                    y2={y}
+                  />
+                  <circle
+                    cx={xForMinutes(point.firstMinutes)}
+                    cy={y}
+                    fill="#0369a1"
+                    r="2.5"
+                  />
+                  <circle
+                    cx={xForMinutes(point.lastMinutes)}
+                    cy={y}
+                    fill="#0369a1"
+                    r="2.5"
+                  />
+                </>
+              ) : null}
+            </g>
+          );
+        })}
+        {[0, 12 * 60, 24 * 60].map((minutes) => {
+          const x = xForMinutes(minutes);
+
+          return (
+            <g key={minutes}>
+              <line
+                stroke="#cbd5e1"
+                strokeWidth="1"
+                x1={x}
+                x2={x}
+                y1={bounds.bottom - 3}
+                y2={bounds.bottom + 1}
+              />
+              <text
+                fill="#94a3b8"
+                fontSize="7"
+                textAnchor={
+                  minutes === 0
+                    ? "start"
+                    : minutes === 24 * 60
+                      ? "end"
+                      : "middle"
+                }
+                x={x}
+                y="98"
+              >
+                {minutes === 12 * 60 ? "12p" : "12a"}
+              </text>
+            </g>
+          );
+        })}
       </svg>
     );
   }
@@ -4023,7 +4287,7 @@ export default function Home() {
       {accessToken && analyticsOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-slate-950/40 p-4">
           <button
-            aria-label="Close nutrition trends"
+            aria-label="Close trends"
             className="absolute inset-0 h-full w-full cursor-default"
             onClick={() => setAnalyticsOpen(false)}
             type="button"
@@ -4035,7 +4299,7 @@ export default function Home() {
           >
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-semibold">Nutrition Trends</h2>
+                <h2 className="text-lg font-semibold">Trends</h2>
               </div>
               <button
                 className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600"
@@ -4091,192 +4355,116 @@ export default function Home() {
               </details>
             </section>
 
-            <section className="mt-6">
+            <section className="mt-6 border-t border-slate-100 pt-5">
               <div className="flex items-baseline justify-between gap-3">
                 <h3 className="text-sm font-semibold text-slate-950">
-                  Nutrition averages
+                  Chrononutrition
                 </h3>
                 <p className="text-xs text-slate-500">
-                  {thirtyDayLoggedDays} logged days, {thirtyDayMealCount} meals
+                  30-day averages
                 </p>
               </div>
 
               {thirtyDayLoggedDays === 0 ? (
                 <p className="mt-3 rounded-2xl border border-dashed border-slate-200 p-3 text-sm text-slate-500">
-                  Log meals to see 30-day averages.
+                  Log meals to see timing patterns.
                 </p>
               ) : (
-                <div className="mt-3 overflow-hidden rounded-2xl border border-slate-200">
-                  <div className="hidden bg-slate-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500 sm:grid sm:grid-cols-[minmax(0,0.9fr)_minmax(5.5rem,0.8fr)_minmax(9rem,1.6fr)_minmax(7rem,1.1fr)] sm:gap-4">
-                    <span>Nutrient</span>
-                    <span>30d avg</span>
-                    <span>7d trend</span>
-                    <span>Reference</span>
+                <>
+                  <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {chrononutritionMetrics.map((metric) => (
+                      <div
+                        className="rounded-xl bg-sky-50 px-3 py-2"
+                        key={metric.id}
+                      >
+                        <p className="text-base font-semibold text-sky-950">
+                          {metric.value}
+                        </p>
+                        <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700">
+                          {metric.detail}
+                        </p>
+                      </div>
+                    ))}
                   </div>
-                  {coreMacroItems
-                    .filter((macroItem) => !hiddenCoreNutrients.includes(macroItem.key))
-                    .map((macroItem) => {
-                      const reference = macroCalorieReferences.find(
-                        (item) => item.key === macroItem.key,
-                      );
-                      const percent = reference
-                        ? getMacroCaloriePercent(
-                            thirtyDayAverageMacros,
-                            reference.key,
-                          )
-                        : null;
-                      const proteinReference = proteinReferences[profile.activityLevel];
-                      const proteinGramsPerKg =
-                        macroItem.key === "proteinGrams"
-                          ? getProteinGramsPerKg(thirtyDayAverageMacros, profile)
-                          : null;
-                      const calorieReference = getCalorieReferenceRange(profile);
-                      let status: "in-range" | "out-of-range" | "unknown" =
-                        "unknown";
-                      let referenceText = "varies";
-                      let basisText = "kcal/day";
-                      let trendReferenceMax: number | undefined;
-                      let trendReferenceMin: number | undefined;
-                      let trendStrokeColor = "#64748b";
-                      let trendPoints = sevenDayMacroRows.map((row) => ({
-                        dayKey: row.dayKey,
-                        value: row.mealCount > 0 ? row.macros.calories : null,
-                      }));
+                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <p className="text-xs font-semibold text-slate-700">
+                        First → last meal
+                      </p>
+                      <p className="text-[10px] text-slate-500">Last 7 days</p>
+                    </div>
+                    <div className="mt-1">
+                      {renderMealTimingChart(sevenDayMealTimingRows)}
+                    </div>
+                  </div>
+                </>
+              )}
+            </section>
 
-                      if (macroItem.key === "calories") {
-                        if (calorieReference) {
-                          status = getRangeStatus(
-                            Math.round(thirtyDayAverageMacros.calories),
-                            calorieReference.min,
-                            calorieReference.max,
-                          );
-                          referenceText = `${calorieReference.min}-${calorieReference.max} kcal/day`;
-                          trendReferenceMax = calorieReference.max;
-                          trendReferenceMin = calorieReference.min;
-                        } else {
-                          referenceText = "Add profile";
-                        }
-                      } else if (macroItem.key === "fiberGrams") {
-                        status = getRangeStatus(
-                          Math.round(thirtyDayAverageMacros.fiberGrams),
-                          fiberChartReference.minGrams,
-                          fiberChartReference.maxGrams,
-                        );
-                        basisText = "g/day";
-                        referenceText = `${fiberChartReference.minGrams}-${fiberChartReference.maxGrams}g/day`;
-                        trendReferenceMax = fiberChartReference.maxGrams;
-                        trendReferenceMin = fiberChartReference.minGrams;
-                        trendStrokeColor = fiberChartReference.strokeColor;
-                        trendPoints = sevenDayMacroRows.map((row) => ({
+            <section className="mt-6 border-t border-slate-100 pt-5">
+              <div className="flex items-baseline justify-between gap-3">
+                <h3 className="text-sm font-semibold text-slate-950">
+                  Daily nutrition
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {thirtyDayLoggedDays} days, {thirtyDayMealCount} meals
+                </p>
+              </div>
+
+              {thirtyDayLoggedDays === 0 ? (
+                <p className="mt-3 rounded-2xl border border-dashed border-slate-200 p-3 text-sm text-slate-500">
+                  Log meals to see nutrition averages.
+                </p>
+              ) : (
+                <>
+                  <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-5">
+                    {thirtyDayNutritionMetrics.map((metric) => (
+                      <div
+                        className="min-w-0 rounded-xl bg-slate-50 px-2.5 py-2"
+                        key={metric.id}
+                      >
+                        <p
+                          className={`truncate text-base ${getRangeTextClass(
+                            metric.status,
+                          )}`}
+                        >
+                          {metric.value}
+                        </p>
+                        <p className="truncate text-[10px] font-medium text-slate-600">
+                          {metric.label}
+                        </p>
+                        <p className="truncate text-[9px] text-slate-400">
+                          {metric.detail}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex items-center gap-4 rounded-2xl border border-slate-200 px-3 py-2">
+                    <div className="w-24 shrink-0">
+                      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                        7d calories
+                      </p>
+                      <p className="text-base font-semibold text-slate-900">
+                        {sevenDayAverageCalories === null
+                          ? "--"
+                          : Math.round(sevenDayAverageCalories)}
+                      </p>
+                      <p className="text-[9px] text-slate-400">kcal/day avg</p>
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      {renderMiniTrendChart({
+                        points: sevenDayMacroRows.map((row) => ({
                           dayKey: row.dayKey,
                           value:
-                            row.mealCount > 0 ? row.macros.fiberGrams : null,
-                        }));
-                      } else if (macroItem.key === "proteinGrams") {
-                        if (profile.weightPounds) {
-                          status = getRangeStatus(
-                            proteinGramsPerKg,
-                            proteinReference.minGramsPerKg,
-                            proteinReference.maxGramsPerKg,
-                          );
-                          basisText = formatGramsPerKg(proteinGramsPerKg);
-                          referenceText = `${proteinReference.minGramsPerKg}-${proteinReference.maxGramsPerKg}g/kg`;
-                          trendReferenceMax = proteinReference.maxGramsPerKg;
-                          trendReferenceMin = proteinReference.minGramsPerKg;
-                          trendPoints = sevenDayMacroRows.map((row) => ({
-                            dayKey: row.dayKey,
-                            value:
-                              row.mealCount > 0
-                                ? getProteinGramsPerKg(row.macros, profile)
-                                : null,
-                          }));
-                        } else {
-                          basisText = "g/day";
-                          referenceText = "Add weight";
-                          trendPoints = sevenDayMacroRows.map((row) => ({
-                            dayKey: row.dayKey,
-                            value:
-                              row.mealCount > 0
-                                ? row.macros.proteinGrams
-                                : null,
-                          }));
-                        }
-                        trendStrokeColor = reference?.strokeColor ?? "#34d399";
-                      } else if (reference) {
-                        status = getRangeStatus(
-                          percent,
-                          reference.minPercent,
-                          reference.maxPercent,
-                        );
-                        basisText = percent === null ? "--" : `${percent}% kcal`;
-                        referenceText = `${reference.minPercent}-${reference.maxPercent}% kcal`;
-                        trendReferenceMax = reference.maxPercent;
-                        trendReferenceMin = reference.minPercent;
-                        trendStrokeColor = reference.strokeColor;
-                        trendPoints = sevenDayMacroRows.map((row) => ({
-                          dayKey: row.dayKey,
-                          value:
-                            row.mealCount > 0
-                              ? (row.percents.find(
-                                  (item) => item.key === reference.key,
-                                )?.percent ?? null)
-                              : null,
-                        }));
-                      }
-
-                      return renderNutritionAverageRow({
-                        average: macroItem.format(thirtyDayAverageMacros),
-                        averageClassName: getRangeTextClass(status),
-                        basis: basisText,
-                        id: macroItem.key,
-                        label: formatNutrientName(macroItem.label),
-                        reference: referenceText,
-                        trend: renderMiniTrendChart({
-                          points: trendPoints,
-                          referenceMax: trendReferenceMax,
-                          referenceMin: trendReferenceMin,
-                          strokeColor: trendStrokeColor,
-                        }),
-                      });
-                    })}
-                  {thirtyDayAverageCustomNutrients.map((nutrient) => {
-                    const unitLabel =
-                      nutrient.unit === "amount" ? "amount/day" : `${nutrient.unit}/day`;
-                    const trendPoints = sevenDayKeys.map((dayKey) => {
-                      const dayMeals = mealsByDayKey[dayKey] ?? [];
-                      const trendNutrient = getCustomNutrientItems(
-                        dayMeals,
-                        [nutrient],
-                      )[0];
-
-                      return {
-                        dayKey,
-                        value:
-                          dayMeals.length > 0 && trendNutrient.estimatedMeals > 0
-                            ? trendNutrient.amount
-                            : null,
-                      };
-                    });
-
-                    return renderNutritionAverageRow({
-                      average:
-                        nutrient.estimatedMeals > 0
-                          ? formatCustomNutrientAmount(
-                              nutrient.amount,
-                              nutrient.unit,
-                            )
-                          : "--",
-                      basis: unitLabel,
-                      id: `${nutrient.name}-${nutrient.unit}`,
-                      label: formatNutrientName(nutrient.name),
-                      reference: "varies",
-                      trend: renderMiniTrendChart({
-                        points: trendPoints,
-                        strokeColor: "#64748b",
-                      }),
-                    });
-                  })}
-                </div>
+                            row.mealCount > 0 ? row.macros.calories : null,
+                        })),
+                        referenceMax: calorieReference?.max,
+                        referenceMin: calorieReference?.min,
+                        strokeColor: "#0ea5e9",
+                      })}
+                    </div>
+                  </div>
+                </>
               )}
             </section>
 
