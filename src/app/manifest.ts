@@ -1,6 +1,9 @@
 import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
+  const isDevelopment = process.env.NODE_ENV === "development";
+  const appName = isDevelopment ? "Diet Tracker Dev" : "Diet Tracker";
+
   return {
     background_color: "#f8fafc",
     description: "Personal meal, macro, and gut symptom tracker.",
@@ -9,12 +12,12 @@ export default function manifest(): MetadataRoute.Manifest {
       {
         purpose: "maskable",
         sizes: "1024x1024",
-        src: "/app-icon.png",
+        src: isDevelopment ? "/dev-app-icon.png" : "/app-icon.png",
         type: "image/png",
       },
     ],
-    name: "Diet Tracker",
-    short_name: "Diet Tracker",
+    name: appName,
+    short_name: appName,
     start_url: "/",
     theme_color: "#020617",
   };

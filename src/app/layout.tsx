@@ -12,14 +12,21 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const isDevelopment = process.env.NODE_ENV === "development";
+const appIcon = isDevelopment ? "/dev-app-icon.png" : "/icon.png";
+const appleTouchIcon = isDevelopment
+  ? "/dev-apple-touch-icon.png"
+  : "/apple-touch-icon.png";
+
 export const metadata: Metadata = {
+  applicationName: isDevelopment ? "Diet Tracker Dev" : "Diet Tracker",
   description: "Personal meal, macro, and gut symptom tracker.",
   icons: {
-    apple: "/apple-touch-icon.png",
-    icon: "/icon.png",
-    shortcut: "/icon.png",
+    apple: appleTouchIcon,
+    icon: appIcon,
+    shortcut: appIcon,
   },
-  title: "Diet Tracker",
+  title: isDevelopment ? "Diet Tracker Dev" : "Diet Tracker",
 };
 
 export const viewport: Viewport = {

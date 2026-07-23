@@ -3,6 +3,7 @@
 import {
   ChangeEvent,
   FormEvent,
+  type ReactNode,
   type TouchEvent,
   useEffect,
   useMemo,
@@ -90,6 +91,98 @@ const analyticsSections: { id: AnalyticsSection; label: string }[] = [
   { id: "timing", label: "Timing" },
   { id: "plants", label: "Plants" },
 ];
+
+type ToolbarModalProps = {
+  children: ReactNode;
+  onClose: () => void;
+  title: string;
+  widthClassName?: string;
+};
+
+function ToolbarModal({
+  children,
+  onClose,
+  title,
+  widthClassName = "max-w-2xl",
+}: ToolbarModalProps) {
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onCloseRef.current();
+      }
+    };
+
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center overscroll-contain bg-slate-950/40 px-4 pb-4 pt-20">
+      <button
+        aria-label={`Close ${title.toLowerCase()}`}
+        className="absolute inset-0 h-full w-full cursor-default"
+        onClick={onClose}
+        type="button"
+      />
+      <section
+        aria-label={title}
+        aria-modal="true"
+        className={`relative z-10 flex max-h-[calc(100dvh-6rem)] w-full ${widthClassName} flex-col overflow-hidden rounded-3xl bg-white p-4 shadow-xl`}
+        role="dialog"
+      >
+        <header className="flex shrink-0 items-center justify-between gap-4">
+          <h2 className="text-lg font-semibold">{title}</h2>
+          <button
+            aria-label={`Close ${title.toLowerCase()}`}
+            className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 text-slate-500"
+            onClick={onClose}
+            type="button"
+          >
+            <svg
+              aria-hidden="true"
+              className="h-4 w-4"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+            >
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
+          </button>
+        </header>
+        <div className="mt-4 min-h-0 overflow-y-auto overscroll-contain">
+          {children}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function OnboardingAccountDropdown({
+  children,
+  onClose,
+}: ToolbarModalProps) {
+  return (
+    <>
+      <button
+        aria-label="Close account menu"
+        className="fixed inset-0 z-10 cursor-default"
+        onClick={onClose}
+        type="button"
+      />
+      <div className="absolute right-0 top-12 z-auto w-72 rounded-2xl border border-slate-200 bg-white p-3 text-sm shadow-lg">
+        {children}
+      </div>
+    </>
+  );
+}
 
 const onboardingAnnouncements: OnboardingAnnouncement[] = [
   {
@@ -1588,6 +1681,7 @@ export default function Home() {
     if (
       !settingsOpen &&
       !analyticsOpen &&
+      !accountMenuOpen &&
       !activeOnboardingId &&
       !installHelpOpen
     ) {
@@ -1619,7 +1713,13 @@ export default function Home() {
       document.documentElement.style.overflow = previousDocumentOverflow;
       window.scrollTo(0, scrollPosition);
     };
-  }, [activeOnboardingId, analyticsOpen, installHelpOpen, settingsOpen]);
+  }, [
+    accountMenuOpen,
+    activeOnboardingId,
+    analyticsOpen,
+    installHelpOpen,
+    settingsOpen,
+  ]);
 
   const missingConfig = status
     ? Object.entries(status.configured)
@@ -1628,6 +1728,10 @@ export default function Home() {
     : [];
   const activeOnboardingAnnouncement =
     onboardingAnnouncements.find(({ id }) => id === activeOnboardingId) ?? null;
+  const AccountContainer =
+    activeOnboardingAnnouncement?.target === "install"
+      ? OnboardingAccountDropdown
+      : ToolbarModal;
 
   useEffect(() => {
     if (!activeOnboardingAnnouncement) {
@@ -1679,6 +1783,16 @@ export default function Home() {
     setDraftHiddenCoreNutrients(hiddenCoreNutrients);
     setDraftNutrientOrder(nutrientOrder);
     setDraftTrackedNutrients(trackedNutrients);
+  }
+
+  function closeAccount() {
+    setAccountMenuOpen(false);
+  }
+
+  function openAccount() {
+    setAnalyticsOpen(false);
+    setSettingsOpen(false);
+    setAccountMenuOpen(true);
   }
 
   function openSettings() {
@@ -2535,9 +2649,10 @@ export default function Home() {
   );
   const todayDayKey = getLocalDayKey(new Date().toISOString());
   const currentDay = new Date();
+  const latestCompleteDay = addLocalDays(currentDay, -1);
   const thirtyDayStartKey = getLocalDayKey(addLocalDays(currentDay, -29).toISOString());
   const sevenDayKeys = Array.from({ length: 7 }, (_, index) =>
-    getLocalDayKey(addLocalDays(currentDay, index - 6).toISOString()),
+    getLocalDayKey(addLocalDays(latestCompleteDay, index - 6).toISOString()),
   );
   const savedNutrientOrder = reconcileNutrientOrder(
     nutrientOrder,
@@ -2831,14 +2946,15 @@ export default function Home() {
     }),
   ];
   const plantDiversityAnalysis = useMemo(() => {
-    const referenceDate = new Date(`${todayDayKey}T12:00:00`);
+    const currentDate = new Date(`${todayDayKey}T12:00:00`);
+    const chartEndDate = addLocalDays(currentDate, -1);
     const analyzedMealDays = meals
       .filter((meal) => meal.nutrition.plantVarieties !== undefined)
       .map((meal) => getLocalDaySerial(new Date(meal.eatenAt)));
     const firstAnalyzedDay =
       analyzedMealDays.length > 0 ? Math.min(...analyzedMealDays) : null;
     const points = Array.from({ length: 56 }, (_, index) => {
-      const date = addLocalDays(referenceDate, index - 55);
+      const date = addLocalDays(chartEndDate, index - 55);
       const snapshot = getPlantDiversitySnapshot(meals, date);
       const hasTrackingData =
         firstAnalyzedDay !== null &&
@@ -2861,7 +2977,7 @@ export default function Home() {
 
     return {
       chartPoints,
-      current: points[points.length - 1].snapshot,
+      current: getPlantDiversitySnapshot(meals, currentDate),
     };
   }, [meals, todayDayKey]);
   const draftHeightFeet = draftProfile.heightInches
@@ -3637,29 +3753,22 @@ export default function Home() {
               <div className="relative">
                 <button
                   aria-expanded={accountMenuOpen}
-                  aria-label={`Account menu${userEmail ? ` for ${userEmail}` : ""}`}
+                  aria-label={`Open account${userEmail ? ` for ${userEmail}` : ""}`}
                   className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white"
-                  onClick={() => setAccountMenuOpen((value) => !value)}
+                  onClick={() =>
+                    accountMenuOpen ? closeAccount() : openAccount()
+                  }
                   title={userEmail ? `Signed in as ${userEmail}` : "Account"}
                   type="button"
                 >
                   {(userEmail?.[0] ?? "U").toUpperCase()}
                 </button>
                 {accountMenuOpen ? (
-                  <>
-                    <button
-                      aria-label="Close account menu"
-                      className="fixed inset-0 z-10 cursor-default"
-                      onClick={() => setAccountMenuOpen(false)}
-                      type="button"
-                    />
-                    <div
-                      className={`absolute right-0 top-12 w-72 rounded-2xl border border-slate-200 bg-white p-3 text-sm shadow-lg ${
-                        activeOnboardingAnnouncement?.target === "install"
-                          ? "z-auto"
-                          : "z-20"
-                      }`}
-                    >
+                  <AccountContainer
+                    onClose={closeAccount}
+                    title="Account"
+                    widthClassName="max-w-md"
+                  >
                       <div className="flex items-center justify-between gap-3">
                         {userEmail ? (
                           <p className="min-w-0 truncate py-1 text-xs text-slate-500">
@@ -3669,7 +3778,7 @@ export default function Home() {
                         <button
                           className="shrink-0 rounded-full px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50"
                           onClick={() => {
-                            setAccountMenuOpen(false);
+                            closeAccount();
                             supabase.auth.signOut();
                           }}
                           type="button"
@@ -3685,7 +3794,7 @@ export default function Home() {
                               : ""
                           }`}
                           onClick={() => {
-                            setAccountMenuOpen(false);
+                            closeAccount();
                             setInstallHelpOpen(true);
                           }}
                           ref={installOnboardingTargetRef}
@@ -3846,8 +3955,7 @@ export default function Home() {
                           {profilePending ? "Saving..." : "Save profile"}
                         </button>
                       </form>
-                    </div>
-                  </>
+                  </AccountContainer>
                 ) : null}
               </div>
             </div>
@@ -4224,29 +4332,12 @@ export default function Home() {
         </div>
       ) : null}
       {accessToken && settingsOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-slate-950/40 p-4">
-          <button
-            aria-label="Close settings"
-            className="absolute inset-0 h-full w-full cursor-default"
-            onClick={closeSettings}
-            type="button"
-          />
-          <section
-            aria-modal="true"
-            className="relative z-10 max-h-[85vh] w-full max-w-md overscroll-contain overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
-            role="dialog"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-semibold">Settings</h2>
-                <p className="mt-1 text-sm leading-6 text-slate-500">
-                  Choose which nutrients appear in the meal cards. The model
-                  still estimates everything it needs in the background.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-5">
+        <ToolbarModal
+          onClose={closeSettings}
+          title="Settings"
+          widthClassName="max-w-md"
+        >
+            <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 Nutrients
               </p>
@@ -4370,10 +4461,6 @@ export default function Home() {
                   );
                 })}
               </div>
-              <p className="mt-2 text-sm leading-6 text-slate-500">
-                Add names only, like calcium or iron. New custom nutrients are
-                estimated for future meals and corrections after you save.
-              </p>
             </div>
 
             <form className="mt-3 flex gap-2" onSubmit={addTrackedNutrient}>
@@ -4410,38 +4497,16 @@ export default function Home() {
                 {settingsPending ? "Saving..." : "Save"}
               </button>
             </div>
-          </section>
-        </div>
+        </ToolbarModal>
       ) : null}
       {accessToken && analyticsOpen ? (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overscroll-contain bg-slate-950/40 px-4 pb-4 pt-20">
-          <button
-            aria-label="Close trends"
-            className="absolute inset-0 h-full w-full cursor-default"
-            onClick={() => setAnalyticsOpen(false)}
-            type="button"
-          />
-          <section
-            aria-modal="true"
-            className="relative z-10 max-h-[calc(100dvh-6rem)] w-full max-w-2xl overscroll-contain overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
-            role="dialog"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-semibold">Trends</h2>
-              </div>
-              <button
-                className="rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600"
-                onClick={() => setAnalyticsOpen(false)}
-                type="button"
-              >
-                Close
-              </button>
-            </div>
-
+        <ToolbarModal
+          onClose={() => setAnalyticsOpen(false)}
+          title="Trends"
+        >
             <div
               aria-label="Trend section"
-              className="mt-4 grid grid-cols-3 rounded-full bg-slate-100 p-1"
+              className="grid grid-cols-3 rounded-full bg-slate-100 p-1"
               role="tablist"
             >
               {analyticsSections.map((section) => {
@@ -4671,8 +4736,7 @@ export default function Home() {
               ) : null}
             </div>
 
-          </section>
-        </div>
+        </ToolbarModal>
       ) : null}
     </main>
   );
