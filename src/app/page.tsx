@@ -46,6 +46,7 @@ type UploadedMealPhotosResult = {
   photos: UploadedMealPhoto[];
   uploadDurationsMs: number[];
 };
+type UploadedBowelPhoto = UploadedMealPhoto;
 type PlantVariety = NonNullable<
   MealRecord["nutrition"]["plantVarieties"]
 >[number];
@@ -307,6 +308,7 @@ const defaultUserProfile: UserProfile = {
 };
 
 const mealPhotosBucket = "meal-photos";
+const bowelPhotosBucket = "bowel-photos";
 const maxMealPhotos = 6;
 
 function roundMilliseconds(value: number) {
@@ -1322,11 +1324,16 @@ export default function Home() {
   const onboardingModalRef = useRef<HTMLElement | null>(null);
   const settingsOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [activeForm, setActiveForm] = useState<"meal" | "symptom" | null>(null);
+  const [activeForm, setActiveForm] = useState<
+    "bowel-movement" | "meal" | "symptom" | null
+  >(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [analyticsSection, setAnalyticsSection] =
     useState<AnalyticsSection>("nutrition");
   const [authPending, setAuthPending] = useState(false);
+  const [bowelMovementPending, setBowelMovementPending] = useState(false);
+  const [bowelPhoto, setBowelPhoto] = useState<MealPhotoDraft | null>(null);
+  const bowelPhotoRef = useRef<MealPhotoDraft | null>(null);
   const [deletingMealId, setDeletingMealId] = useState<string | null>(null);
   const [installHelpOpen, setInstallHelpOpen] = useState(false);
   const [isStandaloneApp, setIsStandaloneApp] = useState(isRunningStandalone);
@@ -1425,6 +1432,37 @@ export default function Home() {
     const nextPhotos = mealPhotosRef.current.filter((item) => item.id !== photoId);
     mealPhotosRef.current = nextPhotos;
     setMealPhotos(nextPhotos);
+  }
+
+  function addBowelPhoto(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    if (bowelPhotoRef.current) {
+      URL.revokeObjectURL(bowelPhotoRef.current.previewUrl);
+    }
+
+    const nextPhoto = {
+      file,
+      id: crypto.randomUUID(),
+      previewUrl: URL.createObjectURL(file),
+    };
+
+    bowelPhotoRef.current = nextPhoto;
+    setBowelPhoto(nextPhoto);
+  }
+
+  function clearBowelPhoto() {
+    if (bowelPhotoRef.current) {
+      URL.revokeObjectURL(bowelPhotoRef.current.previewUrl);
+    }
+
+    bowelPhotoRef.current = null;
+    setBowelPhoto(null);
   }
 
   function applyUserSettings(metadata: Record<string, unknown> | undefined) {
@@ -1673,6 +1711,10 @@ export default function Home() {
       mealPhotosRef.current.forEach((photo) =>
         URL.revokeObjectURL(photo.previewUrl),
       );
+
+      if (bowelPhotoRef.current) {
+        URL.revokeObjectURL(bowelPhotoRef.current.previewUrl);
+      }
     },
     [],
   );
@@ -1927,6 +1969,40 @@ export default function Home() {
       photos: uploadedPhotos,
       uploadDurationsMs,
     };
+  }
+
+  async function removeUploadedBowelPhoto(photo: UploadedBowelPhoto | null) {
+    if (!photo) {
+      return;
+    }
+
+    await supabase.storage.from(bowelPhotosBucket).remove([photo.fileId]);
+  }
+
+  async function uploadBowelPhotoToStorage({
+    id,
+    photo,
+    userId,
+  }: {
+    id: string;
+    photo: File;
+    userId: string;
+  }): Promise<UploadedBowelPhoto> {
+    const pathDate = new Date().toISOString().slice(0, 10);
+    const fileName = `${id}.${getPhotoFileExtension(photo)}`;
+    const fileId = `${userId}/${pathDate}/${fileName}`;
+    const { error } = await supabase.storage
+      .from(bowelPhotosBucket)
+      .upload(fileId, photo, {
+        contentType: photo.type || "image/jpeg",
+        upsert: false,
+      });
+
+    if (error) {
+      throw error;
+    }
+
+    return { fileId, fileName };
   }
 
   async function saveUserSettings() {
@@ -2638,6 +2714,87 @@ export default function Home() {
       });
     } finally {
       setSymptomPending(false);
+    }
+  }
+
+  async function submitBowelMovement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBowelMovementPending(true);
+    setMessage(null);
+    let uploadedPhoto: UploadedBowelPhoto | null = null;
+
+    try {
+      const form = event.currentTarget;
+      const formData = new FormData(form);
+      const id = crypto.randomUUID();
+      const note = String(formData.get("note") ?? "").trim();
+      const selectedPhoto = bowelPhotoRef.current?.file;
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        throw new Error("Sign in before logging a bowel movement.");
+      }
+
+      if (selectedPhoto) {
+        uploadedPhoto = await uploadBowelPhotoToStorage({
+          id,
+          photo: selectedPhoto,
+          userId: session.user.id,
+        });
+      }
+
+      const requestBody = JSON.stringify({
+        id,
+        note: note || undefined,
+        occurredAt: new Date().toISOString(),
+        photo: uploadedPhoto ?? undefined,
+      });
+      const sendRequest = () =>
+        authenticatedFetch("/api/bowel-movements", {
+          body: requestBody,
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+        });
+      let response: Response;
+
+      try {
+        response = await sendRequest();
+      } catch {
+        await wait(1_000);
+        response = await sendRequest();
+      }
+
+      if (!response.ok && response.status >= 500) {
+        await wait(1_000);
+        response = await sendRequest();
+      }
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        await removeUploadedBowelPhoto(uploadedPhoto).catch(() => undefined);
+        uploadedPhoto = null;
+        throw new Error(data.error ?? "Could not log bowel movement.");
+      }
+
+      form.reset();
+      clearBowelPhoto();
+      setActiveForm(null);
+    } catch (error) {
+      showMessage({
+        kind: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "Could not log bowel movement.",
+      });
+    } finally {
+      setBowelMovementPending(false);
     }
   }
 
@@ -4020,9 +4177,9 @@ export default function Home() {
           </form>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-2 sm:gap-3">
               <button
-                className={`rounded-full border px-5 py-3 text-sm font-semibold ${
+                className={`rounded-full border px-3 py-3 text-xs font-semibold sm:px-5 sm:text-sm ${
                   activeForm === "meal"
                     ? "border-emerald-500 bg-emerald-500 text-white"
                     : "border-emerald-500 bg-white text-emerald-700"
@@ -4040,7 +4197,7 @@ export default function Home() {
                 + Meal
               </button>
               <button
-                className={`rounded-full border px-5 py-3 text-sm font-semibold ${
+                className={`rounded-full border px-3 py-3 text-xs font-semibold sm:px-5 sm:text-sm ${
                   activeForm === "symptom"
                     ? "border-rose-500 bg-rose-500 text-white"
                     : "border-rose-500 bg-white text-rose-600"
@@ -4051,6 +4208,23 @@ export default function Home() {
                 type="button"
               >
                 + Symptom
+              </button>
+              <button
+                className={`rounded-full border px-3 py-3 text-xs font-semibold sm:px-5 sm:text-sm ${
+                  activeForm === "bowel-movement"
+                    ? "border-[#b86645] bg-[#b86645] text-white"
+                    : "border-[#b86645] bg-white text-[#b86645]"
+                }`}
+                onClick={() =>
+                  setActiveForm(
+                    activeForm === "bowel-movement"
+                      ? null
+                      : "bowel-movement",
+                  )
+                }
+                type="button"
+              >
+                + Poop
               </button>
             </div>
 
@@ -4121,7 +4295,7 @@ export default function Home() {
                   disabled={mealPending}
                   type="submit"
                 >
-                  {mealPending ? "Saving..." : "Save meal"}
+                  {mealPending ? "Saving..." : "Save"}
                 </button>
               </form>
             ) : null}
@@ -4142,7 +4316,59 @@ export default function Home() {
                   disabled={symptomPending}
                   type="submit"
                 >
-                  {symptomPending ? "Saving..." : "Save symptom"}
+                  {symptomPending ? "Saving..." : "Save"}
+                </button>
+              </form>
+            ) : null}
+
+            {activeForm === "bowel-movement" ? (
+              <form
+                className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"
+                onSubmit={submitBowelMovement}
+              >
+                <textarea
+                  className="min-h-32 w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-base outline-none focus:ring-4 focus:ring-orange-100"
+                  name="note"
+                  placeholder="Anything you want to note? Optional."
+                />
+                {!bowelPhoto ? (
+                  <label className="mt-3 flex w-full cursor-pointer items-center justify-center rounded-full border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
+                    <input
+                      accept="image/*"
+                      className="sr-only"
+                      onChange={addBowelPhoto}
+                      type="file"
+                    />
+                    Add photo (optional)
+                  </label>
+                ) : (
+                  <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="relative aspect-video overflow-hidden rounded-xl bg-slate-200">
+                      <div
+                        aria-label="Selected bowel movement photo"
+                        className="h-full w-full bg-contain bg-center bg-no-repeat"
+                        role="img"
+                        style={{
+                          backgroundImage: `url("${bowelPhoto.previewUrl}")`,
+                        }}
+                      />
+                      <button
+                        aria-label="Remove selected bowel movement photo"
+                        className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-slate-950/75 text-lg leading-none text-white shadow-sm"
+                        onClick={clearBowelPhoto}
+                        type="button"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <button
+                  className="mt-3 w-full rounded-full bg-[#b86645] px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                  disabled={bowelMovementPending}
+                  type="submit"
+                >
+                  {bowelMovementPending ? "Saving..." : "Save"}
                 </button>
               </form>
             ) : null}

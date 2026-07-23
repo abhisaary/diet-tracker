@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient, type User } from "@supabase/supabase
 import { getEnv, getOptionalEnv } from "@/lib/env";
 import { CURRENT_PLANT_VARIETY_VERSION } from "@/lib/plant-variety-rules";
 import {
+  bowelMovementRecordSchema,
   macroSchema,
   mealRecordSchema,
   mealSubmissionSchema,
@@ -10,6 +11,7 @@ import {
   symptomRecordSchema,
 } from "@/lib/schemas";
 import type {
+  BowelMovementRecord,
   MealRecord,
   MealSubmission,
   MealSubmissionStatus,
@@ -61,18 +63,35 @@ type SymptomRow = {
   note: string;
 };
 
+type BowelMovementRow = {
+  id: string;
+  user_id: string;
+  occurred_at: string;
+  created_at: string;
+  updated_at: string;
+  note: string | null;
+  photo_path: string | null;
+  photo_file_name: string | null;
+  image_summary: string | null;
+  summary_status: string;
+  summary_model: string | null;
+  summary_error: string | null;
+  summarized_at: string | null;
+};
+
 type AuthenticatedSupabase = {
   supabase: SupabaseClient;
   user: User;
 };
 
 const mealPhotosBucket = "meal-photos";
+const bowelPhotosBucket = "bowel-photos";
 
 function toIsoString(value: string) {
   return new Date(value).toISOString();
 }
 
-function getMealPhotoMimeType(fileName?: string) {
+function getPhotoMimeType(fileName?: string) {
   if (fileName?.toLowerCase().endsWith(".png")) {
     return "image/png";
   }
@@ -219,6 +238,30 @@ function toSymptomRecord(row: SymptomRow): SymptomRecord {
   });
 }
 
+function toBowelMovementRecord(row: BowelMovementRow): BowelMovementRecord {
+  return bowelMovementRecordSchema.parse({
+    createdAt: toIsoString(row.created_at),
+    id: row.id,
+    imageSummary: row.image_summary ?? undefined,
+    note: row.note ?? undefined,
+    occurredAt: toIsoString(row.occurred_at),
+    photo: row.photo_path
+      ? {
+          fileId: row.photo_path,
+          fileName: row.photo_file_name ?? undefined,
+        }
+      : undefined,
+    summarizedAt: row.summarized_at
+      ? toIsoString(row.summarized_at)
+      : undefined,
+    summaryError: row.summary_error ?? undefined,
+    summaryModel: row.summary_model ?? undefined,
+    summaryStatus: row.summary_status,
+    type: "bowel-movement",
+    updatedAt: toIsoString(row.updated_at),
+  });
+}
+
 export async function listMeals(
   supabase: SupabaseClient,
   userId: string,
@@ -333,7 +376,7 @@ export async function downloadMealPhotos(
   return Promise.all(
     photos.map(async (photo) => ({
       bytes: await downloadMealPhoto(supabase, photo.fileId),
-      mimeType: getMealPhotoMimeType(photo.fileName),
+      mimeType: getPhotoMimeType(photo.fileName),
     })),
   );
 }
@@ -353,6 +396,209 @@ export async function listSymptoms(
   }
 
   return ((data ?? []) as SymptomRow[]).map(toSymptomRecord);
+}
+
+export async function listBowelMovements(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<BowelMovementRecord[]> {
+  const { data, error } = await supabase
+    .from("bowel_movements")
+    .select("*")
+    .eq("user_id", userId)
+    .order("occurred_at", { ascending: false });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return ((data ?? []) as BowelMovementRow[]).map(toBowelMovementRecord);
+}
+
+export async function getBowelMovement(
+  supabase: SupabaseClient,
+  userId: string,
+  id: string,
+): Promise<BowelMovementRecord | null> {
+  const { data, error } = await supabase
+    .from("bowel_movements")
+    .select("*")
+    .eq("id", id)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ? toBowelMovementRecord(data as BowelMovementRow) : null;
+}
+
+export async function downloadBowelMovementPhoto(
+  supabase: SupabaseClient,
+  photo: NonNullable<BowelMovementRecord["photo"]>,
+) {
+  const { data, error } = await supabase.storage
+    .from(bowelPhotosBucket)
+    .download(photo.fileId);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return {
+    bytes: Buffer.from(await data.arrayBuffer()),
+    mimeType: getPhotoMimeType(photo.fileName),
+  };
+}
+
+export async function removeBowelMovementPhoto(
+  supabase: SupabaseClient,
+  path: string,
+) {
+  const { error } = await supabase.storage.from(bowelPhotosBucket).remove([path]);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
+export async function insertBowelMovement({
+  id,
+  note,
+  occurredAt,
+  photo,
+  supabase,
+  userId,
+}: {
+  id: string;
+  note?: string;
+  occurredAt: string;
+  photo?: BowelMovementRecord["photo"];
+  supabase: SupabaseClient;
+  userId: string;
+}) {
+  const { data, error } = await supabase
+    .from("bowel_movements")
+    .insert({
+      id,
+      note: note ?? null,
+      occurred_at: occurredAt,
+      photo_file_name: photo?.fileName ?? null,
+      photo_path: photo?.fileId ?? null,
+      summary_status: photo ? "processing" : "none",
+      user_id: userId,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return toBowelMovementRecord(data as BowelMovementRow);
+}
+
+export async function completeBowelMovementSummary({
+  id,
+  model,
+  summary,
+  supabase,
+  userId,
+}: {
+  id: string;
+  model: string;
+  summary: string;
+  supabase: SupabaseClient;
+  userId: string;
+}) {
+  const { data, error } = await supabase
+    .from("bowel_movements")
+    .update({
+      image_summary: summary,
+      summarized_at: new Date().toISOString(),
+      summary_error: null,
+      summary_model: model,
+      summary_status: "ready",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId)
+    .eq("summary_status", "processing")
+    .select("*")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data ? toBowelMovementRecord(data as BowelMovementRow) : null;
+}
+
+export async function failBowelMovementSummary({
+  errorMessage,
+  id,
+  supabase,
+  userId,
+}: {
+  errorMessage: string;
+  id: string;
+  supabase: SupabaseClient;
+  userId: string;
+}) {
+  const { error } = await supabase
+    .from("bowel_movements")
+    .update({
+      summary_error: errorMessage,
+      summary_status: "failed",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("user_id", userId)
+    .eq("summary_status", "processing");
+
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
+export async function deleteBowelMovement({
+  id,
+  supabase,
+  userId,
+}: {
+  id: string;
+  supabase: SupabaseClient;
+  userId: string;
+}) {
+  const existing = await getBowelMovement(supabase, userId, id);
+
+  if (!existing) {
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from("bowel_movements")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userId)
+    .select("id");
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  if (!data?.length) {
+    throw new Error(
+      "Bowel movement was not deleted. Check the Supabase delete policy.",
+    );
+  }
+
+  if (existing.photo) {
+    await removeBowelMovementPhoto(supabase, existing.photo.fileId).catch(
+      () => undefined,
+    );
+  }
 }
 
 export async function uploadMealPhoto({

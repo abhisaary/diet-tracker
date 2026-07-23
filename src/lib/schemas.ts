@@ -124,6 +124,28 @@ export const symptomRecordSchema = z.object({
   note: z.string(),
 });
 
+export const bowelMovementSummaryStatusSchema = z.enum([
+  "none",
+  "processing",
+  "ready",
+  "failed",
+]);
+
+export const bowelMovementRecordSchema = z.object({
+  id: z.string().uuid(),
+  type: z.literal("bowel-movement"),
+  occurredAt: z.string().datetime(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  note: z.string().optional(),
+  photo: mealPhotoSchema.optional(),
+  imageSummary: z.string().optional(),
+  summaryStatus: bowelMovementSummaryStatusSchema,
+  summaryModel: z.string().optional(),
+  summaryError: z.string().optional(),
+  summarizedAt: z.string().datetime().optional(),
+});
+
 export const mealInputSchema = z.object({
   description: z.string().trim().optional(),
   restaurantLink: optionalUrlSchema,
@@ -146,6 +168,13 @@ export const symptomInputSchema = z.object({
         : [],
     ),
   note: z.string().trim().min(1, "Add a symptom note."),
+});
+
+export const bowelMovementInputSchema = z.object({
+  id: z.string().uuid(),
+  note: z.string().trim().max(2000).optional(),
+  occurredAt: z.string().datetime().optional(),
+  photo: mealPhotoSchema.optional(),
 });
 
 export const timelineItemSchema = z.discriminatedUnion("type", [
@@ -187,5 +216,9 @@ export type NutritionEstimate = z.infer<typeof nutritionEstimateSchema>;
 export type TrackedNutrient = z.infer<typeof trackedNutrientSchema>;
 export type MealRecord = z.infer<typeof mealRecordSchema>;
 export type SymptomRecord = z.infer<typeof symptomRecordSchema>;
+export type BowelMovementRecord = z.infer<typeof bowelMovementRecordSchema>;
+export type BowelMovementSummaryStatus = z.infer<
+  typeof bowelMovementSummaryStatusSchema
+>;
 export type TimelineItem = z.infer<typeof timelineItemSchema>;
 export type ReportSummary = z.infer<typeof reportSummarySchema>;
