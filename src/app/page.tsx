@@ -86,9 +86,9 @@ type IngredientBreakdownColumn =
 const plantBackfillLockKey = `diet-tracker:plant-backfill:${CURRENT_PLANT_VARIETY_VERSION}`;
 const plantBackfillLockDurationMs = 10 * 60 * 1000;
 const analyticsSections: { id: AnalyticsSection; label: string }[] = [
-  { id: "plants", label: "Plants" },
-  { id: "timing", label: "Timing" },
   { id: "nutrition", label: "Nutrition" },
+  { id: "timing", label: "Timing" },
+  { id: "plants", label: "Plants" },
 ];
 
 const onboardingAnnouncements: OnboardingAnnouncement[] = [
@@ -1232,7 +1232,7 @@ export default function Home() {
   const [activeForm, setActiveForm] = useState<"meal" | "symptom" | null>(null);
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [analyticsSection, setAnalyticsSection] =
-    useState<AnalyticsSection>("plants");
+    useState<AnalyticsSection>("nutrition");
   const [authPending, setAuthPending] = useState(false);
   const [deletingMealId, setDeletingMealId] = useState<string | null>(null);
   const [installHelpOpen, setInstallHelpOpen] = useState(false);
@@ -4405,7 +4405,7 @@ export default function Home() {
         </div>
       ) : null}
       {accessToken && analyticsOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-slate-950/40 p-4">
+        <div className="fixed inset-x-0 bottom-0 top-16 z-50 flex items-start justify-center overscroll-contain bg-slate-950/40 p-4">
           <button
             aria-label="Close trends"
             className="absolute inset-0 h-full w-full cursor-default"
@@ -4414,7 +4414,7 @@ export default function Home() {
           />
           <section
             aria-modal="true"
-            className="relative z-10 max-h-[85vh] w-full max-w-2xl overscroll-contain overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
+            className="relative z-10 max-h-[calc(100dvh-6rem)] w-full max-w-2xl overscroll-contain overflow-y-auto rounded-3xl bg-white p-4 shadow-xl"
             role="dialog"
           >
             <div className="flex items-start justify-between gap-4">
