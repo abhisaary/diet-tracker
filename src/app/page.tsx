@@ -13,6 +13,7 @@ import {
 
 import { CURRENT_PLANT_VARIETY_VERSION } from "@/lib/plant-variety-rules";
 import type {
+  BowelMovementRecord,
   MealRecord,
   MealSubmission,
   MacroTotals,
@@ -59,7 +60,7 @@ type MacroCalorieKey = "carbsGrams" | "fatGrams" | "proteinGrams";
 type ActivityLevel = "general" | "very_active";
 type SexForEstimate = "female" | "male";
 type AnalyticsSection = "nutrition" | "plants" | "timing";
-type AccountSection = "profile" | "notifications";
+type AccountSection = "profile" | "tracking" | "notifications";
 type MealReminderDraft = {
   id: string;
   time: string;
@@ -77,8 +78,11 @@ type OnboardingAnnouncement = {
 type UserProfile = {
   activityLevel: ActivityLevel;
   ageYears?: number;
+  bowelMovementTrackingEnabled: boolean;
   heightInches?: number;
   sex?: SexForEstimate;
+  showBowelMovementsOnTimeline: boolean;
+  symptomTrackingEnabled: boolean;
   weightPounds?: number;
 };
 type IngredientBreakdownColumn =
@@ -101,6 +105,11 @@ const analyticsSections: { id: AnalyticsSection; label: string }[] = [
   { id: "nutrition", label: "Nutrition" },
   { id: "timing", label: "Timing" },
   { id: "plants", label: "Plants" },
+];
+const accountSections: { id: AccountSection; label: string }[] = [
+  { id: "profile", label: "Profile" },
+  { id: "tracking", label: "Tracking" },
+  { id: "notifications", label: "Notifications" },
 ];
 
 type ToolbarModalProps = {
@@ -207,10 +216,10 @@ const onboardingAnnouncements: OnboardingAnnouncement[] = [
   {
     id: "nutrient-settings-v1",
     message:
-      "Customize the nutrients you care about. You can show, hide, and reorder the default nutrients, or add and remove others such as calcium, iron, or cholesterol.",
+      "Use Nutrients to choose which nutrition data appears throughout the app. Show, hide, and reorder the defaults, or add nutrients such as calcium, iron, or cholesterol.",
     target: "settings",
-    targetLabel: "Settings",
-    title: "Track what matters to you",
+    targetLabel: "Nutrients",
+    title: "Choose what you track",
   },
   {
     id: "home-screen-v1",
@@ -362,6 +371,9 @@ const fiberChartReference = {
 
 const defaultUserProfile: UserProfile = {
   activityLevel: "general",
+  bowelMovementTrackingEnabled: false,
+  showBowelMovementsOnTimeline: false,
+  symptomTrackingEnabled: false,
 };
 
 const mealPhotosBucket = "meal-photos";
@@ -538,25 +550,38 @@ const canonicalTimelineGuideMinutes = Array.from(
   (_, index) => index * 3 * 60,
 );
 
-type MealTimelineGuide = {
+type DailyTimelineGuide = {
   label: string;
   position: number;
 };
 
-type MealTimelineItem = {
+type DailyTimelineEntry =
+  | {
+      id: string;
+      kind: "bowel-movement";
+      occurredAt: string;
+    }
+  | {
+      id: string;
+      kind: "meal";
+      meal: MealRecord;
+      occurredAt: string;
+    };
+
+type DailyTimelineItem = {
   dense: boolean;
+  entry: DailyTimelineEntry;
   labelCenter: number;
   labelHeight: number;
   markerOffset: number;
   markerPosition: number;
-  meal: MealRecord;
 };
 
-type MealTimelineLayout = {
+type DailyTimelineLayout = {
   domainEndMinutes: number;
   domainStartMinutes: number;
-  guides: MealTimelineGuide[];
-  items: MealTimelineItem[];
+  guides: DailyTimelineGuide[];
+  items: DailyTimelineItem[];
   plotHeight: number;
 };
 
@@ -577,8 +602,29 @@ function formatTimelineTime(minutes: number) {
   }).format(date);
 }
 
-function getMealTimelineLayout(meals: MealRecord[]): MealTimelineLayout {
-  if (meals.length === 0) {
+function getDailyTimelineLayout(
+  meals: MealRecord[],
+  bowelMovements: BowelMovementRecord[],
+): DailyTimelineLayout {
+  const entries: DailyTimelineEntry[] = [
+    ...meals.map((meal) => ({
+      id: meal.id,
+      kind: "meal" as const,
+      meal,
+      occurredAt: meal.eatenAt,
+    })),
+    ...bowelMovements.map((movement) => ({
+      id: movement.id,
+      kind: "bowel-movement" as const,
+      occurredAt: movement.occurredAt,
+    })),
+  ].sort(
+    (first, second) =>
+      new Date(first.occurredAt).getTime() -
+      new Date(second.occurredAt).getTime(),
+  );
+
+  if (entries.length === 0) {
     return {
       domainEndMinutes: timelineEdgePaddingMinutes * 2,
       domainStartMinutes: 0,
@@ -588,22 +634,18 @@ function getMealTimelineLayout(meals: MealRecord[]): MealTimelineLayout {
     };
   }
 
-  const sortedMeals = [...meals].sort(
-    (first, second) =>
-      new Date(first.eatenAt).getTime() - new Date(second.eatenAt).getTime(),
+  const entryMinutes = entries.map((entry) =>
+    getMinutesOfDay(entry.occurredAt),
   );
-  const mealMinutes = sortedMeals.map((meal) =>
-    getMinutesOfDay(meal.eatenAt),
-  );
-  const earliestMealMinutes = Math.min(...mealMinutes);
-  const latestMealMinutes = Math.max(...mealMinutes);
+  const earliestEntryMinutes = Math.min(...entryMinutes);
+  const latestEntryMinutes = Math.max(...entryMinutes);
   const domainStartMinutes = Math.max(
     0,
-    earliestMealMinutes - timelineEdgePaddingMinutes,
+    earliestEntryMinutes - timelineEdgePaddingMinutes,
   );
   const domainEndMinutes = Math.min(
     calendarDayEndMinutes,
-    latestMealMinutes + timelineEdgePaddingMinutes,
+    latestEntryMinutes + timelineEdgePaddingMinutes,
   );
 
   const domainDuration = domainEndMinutes - domainStartMinutes;
@@ -612,10 +654,10 @@ function getMealTimelineLayout(meals: MealRecord[]): MealTimelineLayout {
   );
   const densityBasedHeight =
     timelineLabelEdge * 2 +
-    Math.max(0, meals.length - 1) * timelineLabelMaxGap +
+    Math.max(0, entries.length - 1) * timelineLabelMaxGap +
     44;
   const plotHeight =
-    meals.length === 1
+    entries.length === 1
       ? minimumTimelineHeight
       : Math.min(
           maximumTimelineHeight,
@@ -625,8 +667,8 @@ function getMealTimelineLayout(meals: MealRecord[]): MealTimelineLayout {
             densityBasedHeight,
           ),
         );
-  const markerPositions = sortedMeals.map((meal) => {
-    const minutes = getMinutesOfDay(meal.eatenAt);
+  const markerPositions = entries.map((entry) => {
+    const minutes = getMinutesOfDay(entry.occurredAt);
 
     return Math.min(
       1,
@@ -637,10 +679,10 @@ function getMealTimelineLayout(meals: MealRecord[]): MealTimelineLayout {
   const maximumLabelCenter = plotHeight - timelineLabelEdge;
   const availableLabelRange = maximumLabelCenter - minimumLabelCenter;
   const labelGap =
-    meals.length > 1
+    entries.length > 1
       ? Math.min(
           timelineLabelMaxGap,
-          availableLabelRange / (meals.length - 1),
+          availableLabelRange / (entries.length - 1),
         )
       : timelineLabelMaxGap;
   const labelHeight = Math.min(44, Math.max(24, labelGap - 3));
@@ -707,30 +749,32 @@ function getMealTimelineLayout(meals: MealRecord[]): MealTimelineLayout {
       label: formatTimelineTime(minutes),
       position: (minutes - domainStartMinutes) / domainDuration,
     })),
-    items: sortedMeals.map((meal, index) => ({
+    items: entries.map((entry, index) => ({
       dense: labelHeight < 38,
+      entry,
       labelCenter: labelCenters[index] ?? timelineLabelEdge,
       labelHeight,
       markerOffset: markerOffsets[index],
       markerPosition: markerPositions[index],
-      meal,
     })),
     plotHeight,
   };
 }
 
-function MealTimeline({
+function DailyTimeline({
+  bowelMovements,
+  itemsAriaLabel,
   meals,
-  mealsAriaLabel,
   onOpenMeal,
   timelineAriaLabel,
 }: {
+  bowelMovements: BowelMovementRecord[];
+  itemsAriaLabel: string;
   meals: MealRecord[];
-  mealsAriaLabel: string;
   onOpenMeal: (meal: MealRecord) => void;
   timelineAriaLabel: string;
 }) {
-  const layout = getMealTimelineLayout(meals);
+  const layout = getDailyTimelineLayout(meals, bowelMovements);
 
   return (
     <section
@@ -770,7 +814,7 @@ function MealTimeline({
         >
           {layout.items.map((item) => (
             <line
-              key={item.meal.id}
+              key={`${item.entry.kind}-${item.entry.id}`}
               stroke="#94a3b8"
               strokeLinecap="round"
               strokeOpacity="0.7"
@@ -783,17 +827,54 @@ function MealTimeline({
             />
           ))}
         </svg>
-        <ol aria-label={mealsAriaLabel} className="absolute inset-0">
+        <ol aria-label={itemsAriaLabel} className="absolute inset-0">
           {layout.items.map((item) => {
-            const mealTitle = getMealTitle(item.meal);
-            const mealTime = formatMealTimeOfDay(item.meal.eatenAt);
+            const itemTime = formatMealTimeOfDay(item.entry.occurredAt);
+
+            if (item.entry.kind === "bowel-movement") {
+              const movementLabelHeight = Math.min(item.labelHeight, 28);
+
+              return (
+                <li
+                  aria-label={`Bowel movement at ${itemTime}`}
+                  className="pointer-events-none absolute inset-0"
+                  key={`bowel-movement-${item.entry.id}`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className="absolute z-10 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-[#7c5c8e] shadow-[0_0_0_1px_#d8c9df]"
+                    style={{
+                      left: `calc(2.5rem + ${item.markerOffset}px)`,
+                      top: `${item.markerPosition * 100}%`,
+                    }}
+                  />
+                  <div
+                    className="absolute left-16 z-20 flex w-36 -translate-y-1/2 items-center overflow-hidden rounded-full border border-[#d8c9df] bg-[#faf7fb] px-2.5 text-[#674b75] shadow-sm"
+                    style={{
+                      height: `${movementLabelHeight}px`,
+                      top: `${(item.labelCenter / layout.plotHeight) * 100}%`,
+                    }}
+                  >
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <span className="text-xs font-semibold">BM</span>
+                      <span className="shrink-0 text-[10px] font-medium text-[#7c5c8e]">
+                        {itemTime}
+                      </span>
+                    </span>
+                  </div>
+                </li>
+              );
+            }
+
+            const meal = item.entry.meal;
+            const mealTitle = getMealTitle(meal);
             const hasCautions =
-              (item.meal.nutrition.cautions?.length ?? 0) > 0;
+              (meal.nutrition.cautions?.length ?? 0) > 0;
 
             return (
               <li
                 className="pointer-events-none absolute inset-0"
-                key={item.meal.id}
+                key={`meal-${item.entry.id}`}
               >
                 <span
                   aria-hidden="true"
@@ -805,13 +886,13 @@ function MealTimeline({
                 />
                 <button
                   aria-haspopup="dialog"
-                  aria-label={`Open meal details for ${mealTitle} at ${mealTime}${
+                  aria-label={`Open meal details for ${mealTitle} at ${itemTime}${
                     hasCautions ? ", meal caution" : ""
                   }`}
                   className={`pointer-events-auto absolute left-16 right-0 z-20 -translate-y-1/2 overflow-hidden rounded-xl border bg-white px-2 text-left shadow-sm outline-none focus-visible:ring-4 focus-visible:ring-emerald-100 ${
                     hasCautions ? "border-amber-200" : "border-slate-200"
                   }`}
-                  onClick={() => onOpenMeal(item.meal)}
+                  onClick={() => onOpenMeal(meal)}
                   style={{
                     height: `${item.labelHeight}px`,
                     paddingRight: hasCautions ? "1.75rem" : undefined,
@@ -833,7 +914,7 @@ function MealTimeline({
                         {mealTitle}
                       </span>
                       <span className="shrink-0 text-[10px] font-medium text-slate-500">
-                        {mealTime}
+                        {itemTime}
                       </span>
                     </span>
                   ) : (
@@ -842,7 +923,7 @@ function MealTimeline({
                         {mealTitle}
                       </span>
                       <span className="block text-[10px] font-medium leading-3 text-slate-500">
-                        {mealTime}
+                        {itemTime}
                       </span>
                     </>
                   )}
@@ -1128,12 +1209,27 @@ function parseUserProfile(value: unknown): UserProfile {
         : defaultUserProfile.activityLevel,
     ageYears:
       "ageYears" in value ? getOptionalPositiveNumber(value.ageYears) : undefined,
+    bowelMovementTrackingEnabled:
+      "bowelMovementTrackingEnabled" in value &&
+      typeof value.bowelMovementTrackingEnabled === "boolean"
+        ? value.bowelMovementTrackingEnabled
+        : defaultUserProfile.bowelMovementTrackingEnabled,
     heightInches:
       "heightInches" in value
         ? getOptionalPositiveNumber(value.heightInches)
         : undefined,
     sex:
       "sex" in value && isSexForEstimate(value.sex) ? value.sex : undefined,
+    showBowelMovementsOnTimeline:
+      "showBowelMovementsOnTimeline" in value &&
+      typeof value.showBowelMovementsOnTimeline === "boolean"
+        ? value.showBowelMovementsOnTimeline
+        : defaultUserProfile.showBowelMovementsOnTimeline,
+    symptomTrackingEnabled:
+      "symptomTrackingEnabled" in value &&
+      typeof value.symptomTrackingEnabled === "boolean"
+        ? value.symptomTrackingEnabled
+        : defaultUserProfile.symptomTrackingEnabled,
     weightPounds:
       "weightPounds" in value
         ? getOptionalPositiveNumber(value.weightPounds)
@@ -1254,13 +1350,26 @@ function areTrackedNutrientsEqual(
   );
 }
 
-function areProfilesEqual(first: UserProfile, second: UserProfile) {
+function arePhysicalProfilesEqual(first: UserProfile, second: UserProfile) {
   return (
     first.activityLevel === second.activityLevel &&
     first.ageYears === second.ageYears &&
     first.heightInches === second.heightInches &&
     first.sex === second.sex &&
     first.weightPounds === second.weightPounds
+  );
+}
+
+function areTrackingPreferencesEqual(
+  first: UserProfile,
+  second: UserProfile,
+) {
+  return (
+    first.bowelMovementTrackingEnabled ===
+      second.bowelMovementTrackingEnabled &&
+    first.showBowelMovementsOnTimeline ===
+      second.showBowelMovementsOnTimeline &&
+    first.symptomTrackingEnabled === second.symptomTrackingEnabled
   );
 }
 
@@ -1635,7 +1744,7 @@ function EyeOffIcon() {
   );
 }
 
-function SettingsIcon() {
+function NutrientsIcon() {
   return (
     <svg
       aria-hidden="true"
@@ -1647,12 +1756,13 @@ function SettingsIcon() {
       strokeWidth="2"
       viewBox="0 0 24 24"
     >
-      <path d="M4 7h10" />
-      <path d="M18 7h2" />
-      <circle cx="16" cy="7" r="2" />
-      <path d="M4 17h2" />
-      <path d="M10 17h10" />
-      <circle cx="8" cy="17" r="2" />
+      <path d="m7.2 8.7 2.4 1.9" />
+      <path d="m13.7 10.4 2.7-2.5" />
+      <path d="m13.4 13.7 2.2 2.3" />
+      <circle cx="5.5" cy="7.5" r="2" />
+      <circle cx="11.5" cy="12" r="2.6" />
+      <circle cx="18" cy="6.5" r="1.8" />
+      <circle cx="17.5" cy="18" r="2.2" />
     </svg>
   );
 }
@@ -1672,24 +1782,6 @@ function ShareIcon() {
       <path d="M12 16V3" />
       <path d="m7 8 5-5 5 5" />
       <path d="M5 11v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8" />
-    </svg>
-  );
-}
-
-function BellIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="h-4 w-4"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-      <path d="M10 21h4" />
     </svg>
   );
 }
@@ -1739,6 +1831,7 @@ export default function Home() {
   const plantBackfillRunning = useRef(false);
   const mealOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
   const mealLoadSequenceRef = useRef(0);
+  const bowelMovementLoadSequenceRef = useRef(0);
   const analyticsSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const onboardingModalRef = useRef<HTMLElement | null>(null);
   const settingsOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
@@ -1750,6 +1843,9 @@ export default function Home() {
   const [analyticsSection, setAnalyticsSection] =
     useState<AnalyticsSection>("nutrition");
   const [authPending, setAuthPending] = useState(false);
+  const [bowelMovements, setBowelMovements] = useState<BowelMovementRecord[]>(
+    [],
+  );
   const [bowelMovementPending, setBowelMovementPending] = useState(false);
   const [bowelPhoto, setBowelPhoto] = useState<MealPhotoDraft | null>(null);
   const bowelPhotoRef = useRef<MealPhotoDraft | null>(null);
@@ -1937,6 +2033,8 @@ export default function Home() {
     setDraftTrackedNutrients(nextTrackedNutrients);
     setDraftHiddenCoreNutrients(nextHiddenCoreNutrients);
     setDraftNutrientOrder(nextNutrientOrder);
+
+    return nextProfile;
   }
 
   function activateOnboarding(
@@ -2016,10 +2114,18 @@ export default function Home() {
       const email = data.session?.user.email ?? null;
       setAccessToken(token);
       setUserEmail(email);
-      applyUserSettings(data.session?.user.user_metadata);
+      const nextProfile = applyUserSettings(
+        data.session?.user.user_metadata,
+      );
       if (token && email) {
         showFirstUnseenOnboarding(email);
         loadMeals(token);
+        if (
+          nextProfile.bowelMovementTrackingEnabled &&
+          nextProfile.showBowelMovementsOnTimeline
+        ) {
+          loadBowelMovements(token);
+        }
       } else {
         setActiveOnboardingId(null);
       }
@@ -2032,12 +2138,23 @@ export default function Home() {
       const email = session?.user.email ?? null;
       setAccessToken(token);
       setUserEmail(email);
-      applyUserSettings(session?.user.user_metadata);
+      const nextProfile = applyUserSettings(session?.user.user_metadata);
       if (token && email) {
         showFirstUnseenOnboarding(email);
         loadMeals(token);
+        if (
+          nextProfile.bowelMovementTrackingEnabled &&
+          nextProfile.showBowelMovementsOnTimeline
+        ) {
+          loadBowelMovements(token);
+        } else {
+          bowelMovementLoadSequenceRef.current += 1;
+          setBowelMovements([]);
+        }
       } else {
         setActiveOnboardingId(null);
+        bowelMovementLoadSequenceRef.current += 1;
+        setBowelMovements([]);
         setDraftHiddenCoreNutrients([]);
         setDraftNutrientOrder([]);
         setDraftTrackedNutrients([]);
@@ -2338,6 +2455,7 @@ export default function Home() {
   function closeAccount() {
     setAccountMenuOpen(false);
     setAccountSection("profile");
+    setDraftProfile(profile);
     resetNotificationDraft();
   }
 
@@ -2467,14 +2585,16 @@ export default function Home() {
     }
   }
 
-  function openNotificationSettings() {
-    setAccountSection("notifications");
-    void loadNotificationSettings();
+  function selectAccountSection(section: AccountSection) {
+    setAccountSection(section);
+
+    if (section === "notifications") {
+      void loadNotificationSettings();
+    }
   }
 
   function cancelNotificationSettings() {
     resetNotificationDraft();
-    setAccountSection("profile");
   }
 
   async function saveMealReminderSettings() {
@@ -2694,19 +2814,35 @@ export default function Home() {
     setDraftProfile((current) => ({ ...current, ...updates }));
   }
 
-  async function saveUserProfile(event: FormEvent<HTMLFormElement>) {
+  async function saveUserProfile(
+    event: FormEvent<HTMLFormElement>,
+    section: "profile" | "tracking",
+  ) {
     event.preventDefault();
     setProfilePending(true);
     setMessage(null);
 
     try {
-      const nextProfile: UserProfile = {
-        activityLevel: draftProfile.activityLevel,
-        ageYears: draftProfile.ageYears,
-        heightInches: draftProfile.heightInches,
-        sex: draftProfile.sex,
-        weightPounds: draftProfile.weightPounds,
-      };
+      const draftBeforeSave = draftProfile;
+      const nextProfile: UserProfile =
+        section === "profile"
+          ? {
+              ...profile,
+              activityLevel: draftBeforeSave.activityLevel,
+              ageYears: draftBeforeSave.ageYears,
+              heightInches: draftBeforeSave.heightInches,
+              sex: draftBeforeSave.sex,
+              weightPounds: draftBeforeSave.weightPounds,
+            }
+          : {
+              ...profile,
+              bowelMovementTrackingEnabled:
+                draftBeforeSave.bowelMovementTrackingEnabled,
+              showBowelMovementsOnTimeline:
+                draftBeforeSave.showBowelMovementsOnTimeline,
+              symptomTrackingEnabled:
+                draftBeforeSave.symptomTrackingEnabled,
+            };
       const { data, error } = await supabase.auth.updateUser({
         data: { userProfile: nextProfile },
       });
@@ -2717,7 +2853,54 @@ export default function Home() {
 
       const savedProfile = parseUserProfile(data.user.user_metadata?.userProfile);
       setProfile(savedProfile);
-      setDraftProfile(savedProfile);
+      setDraftProfile({
+        ...savedProfile,
+        ...(section === "profile"
+          ? {
+              bowelMovementTrackingEnabled:
+                draftBeforeSave.bowelMovementTrackingEnabled,
+              showBowelMovementsOnTimeline:
+                draftBeforeSave.showBowelMovementsOnTimeline,
+              symptomTrackingEnabled:
+                draftBeforeSave.symptomTrackingEnabled,
+            }
+          : {
+              activityLevel: draftBeforeSave.activityLevel,
+              ageYears: draftBeforeSave.ageYears,
+              heightInches: draftBeforeSave.heightInches,
+              sex: draftBeforeSave.sex,
+              weightPounds: draftBeforeSave.weightPounds,
+            }),
+      });
+
+      if (section === "tracking") {
+        if (
+          savedProfile.bowelMovementTrackingEnabled &&
+          savedProfile.showBowelMovementsOnTimeline
+        ) {
+          await loadBowelMovements();
+        } else {
+          bowelMovementLoadSequenceRef.current += 1;
+          setBowelMovements([]);
+        }
+
+        setActiveForm((current) => {
+          if (
+            (current === "symptom" &&
+              !savedProfile.symptomTrackingEnabled) ||
+            (current === "bowel-movement" &&
+              !savedProfile.bowelMovementTrackingEnabled)
+          ) {
+            return null;
+          }
+
+          return current;
+        });
+
+        if (!savedProfile.bowelMovementTrackingEnabled) {
+          clearBowelPhoto();
+        }
+      }
     } catch (error) {
       showMessage({
         kind: "error",
@@ -2856,6 +3039,31 @@ export default function Home() {
       submission,
       ...current.filter((item) => item.id !== submission.id),
     ]);
+  }
+
+  async function loadBowelMovements(token = accessToken) {
+    if (!token) {
+      return;
+    }
+
+    const loadSequence = bowelMovementLoadSequenceRef.current + 1;
+    bowelMovementLoadSequenceRef.current = loadSequence;
+    const response = await fetch("/api/bowel-movements", {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(data.error ?? "Could not load bowel movements.");
+    }
+
+    if (loadSequence === bowelMovementLoadSequenceRef.current) {
+      setBowelMovements(
+        (data.bowelMovements ?? []) as BowelMovementRecord[],
+      );
+    }
   }
 
   async function loadMeals(token = accessToken, shouldBackfillPlants = true) {
@@ -3437,9 +3645,21 @@ export default function Home() {
         throw new Error(data.error ?? "Could not log bowel movement.");
       }
 
+      if (
+        profile.bowelMovementTrackingEnabled &&
+        profile.showBowelMovementsOnTimeline
+      ) {
+        const savedMovement = data.bowelMovement as BowelMovementRecord;
+        setBowelMovements((current) => [
+          savedMovement,
+          ...current.filter((movement) => movement.id !== savedMovement.id),
+        ]);
+      }
+
       form.reset();
       clearBowelPhoto();
       setActiveForm(null);
+      showMessage({ kind: "success", text: "BM saved." });
     } catch (error) {
       showMessage({
         kind: "error",
@@ -3453,11 +3673,26 @@ export default function Home() {
     }
   }
 
+  const showBowelMovementsOnTimeline =
+    profile.bowelMovementTrackingEnabled &&
+    profile.showBowelMovementsOnTimeline;
+  const visibleBowelMovements = showBowelMovementsOnTimeline
+    ? bowelMovements
+    : [];
   const todayMeals = meals
     .filter(isMealToday)
     .sort(
       (first, second) =>
         new Date(first.eatenAt).getTime() - new Date(second.eatenAt).getTime(),
+    );
+  const todayBowelMovements = visibleBowelMovements
+    .filter((movement) =>
+      isSameLocalDay(new Date(movement.occurredAt), new Date()),
+    )
+    .sort(
+      (first, second) =>
+        new Date(first.occurredAt).getTime() -
+        new Date(second.occurredAt).getTime(),
     );
   const timelineModalMeal =
     meals.find((meal) => meal.id === timelineMealModalId) ?? null;
@@ -3497,7 +3732,21 @@ export default function Home() {
     notificationSettings,
     draftNotificationSettings,
   );
-  const profileChanged = !areProfilesEqual(profile, draftProfile);
+  const profileChanged = !arePhysicalProfilesEqual(profile, draftProfile);
+  const trackingPreferencesChanged = !areTrackingPreferencesEqual(
+    profile,
+    draftProfile,
+  );
+  const visibleAccountSections = notificationUiAvailable
+    ? accountSections
+    : accountSections.filter((section) => section.id !== "notifications");
+  const actionGridColumnClassName =
+    profile.symptomTrackingEnabled && profile.bowelMovementTrackingEnabled
+      ? "grid-cols-3"
+      : profile.symptomTrackingEnabled ||
+          profile.bowelMovementTrackingEnabled
+        ? "grid-cols-2"
+        : "grid-cols-1";
   const mealsByDay = meals.reduce<
     { dayKey: string; dayLabel: string; meals: MealRecord[] }[]
   >((groups, meal) => {
@@ -3517,9 +3766,6 @@ export default function Home() {
 
     return groups;
   }, []);
-  const historyMealsByDay = mealsByDay.filter(
-    (group) => group.dayKey !== todayDayKey,
-  );
   const mealsByDayKey = mealsByDay.reduce<Record<string, MealRecord[]>>(
     (groups, group) => ({
       ...groups,
@@ -3527,6 +3773,38 @@ export default function Home() {
     }),
     {},
   );
+  const bowelMovementsByDayKey = visibleBowelMovements.reduce<
+    Record<string, BowelMovementRecord[]>
+  >((groups, movement) => {
+    const dayKey = getLocalDayKey(movement.occurredAt);
+    groups[dayKey] = [...(groups[dayKey] ?? []), movement];
+    return groups;
+  }, {});
+  const historyDayKeys = new Set([
+    ...mealsByDay
+      .map((group) => group.dayKey)
+      .filter((dayKey) => dayKey !== todayDayKey),
+    ...Object.keys(bowelMovementsByDayKey).filter(
+      (dayKey) => dayKey !== todayDayKey,
+    ),
+  ]);
+  const historyDailyTimelineGroups = [...historyDayKeys]
+    .sort((first, second) => second.localeCompare(first))
+    .map((dayKey) => {
+      const dayMeals = mealsByDayKey[dayKey] ?? [];
+      const dayBowelMovements = bowelMovementsByDayKey[dayKey] ?? [];
+      const representativeTimestamp =
+        dayMeals[0]?.eatenAt ??
+        dayBowelMovements[0]?.occurredAt ??
+        `${dayKey}T12:00:00`;
+
+      return {
+        bowelMovements: dayBowelMovements,
+        dayKey,
+        dayLabel: formatMealDay(representativeTimestamp),
+        meals: dayMeals,
+      };
+    });
   const thirtyDayMealsByDay = mealsByDay.filter(
     (group) => group.dayKey >= thirtyDayStartKey && group.meals.length > 0,
   );
@@ -4625,7 +4903,7 @@ export default function Home() {
                 <ChartIcon />
               </button>
               <button
-                aria-label="Open settings"
+                aria-label="Open nutrients"
                 className={`flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm ${
                   settingsOpen ? "ring-4 ring-emerald-100" : ""
                 } ${
@@ -4635,10 +4913,10 @@ export default function Home() {
                 }`}
                 onClick={() => (settingsOpen ? closeSettings() : openSettings())}
                 ref={settingsOnboardingTargetRef}
-                title="Settings"
+                title="Nutrients"
                 type="button"
               >
-                <SettingsIcon />
+                <NutrientsIcon />
               </button>
               <div className="relative">
                 <button
@@ -4656,113 +4934,155 @@ export default function Home() {
                 {accountMenuOpen ? (
                   <AccountContainer
                     onClose={closeAccount}
-                    title={
-                      accountSection === "notifications"
-                        ? "Notifications"
-                        : "Account"
-                    }
+                    title="Account"
                     widthClassName="max-w-md"
                   >
-                    {accountSection === "profile" ? (
-                      <>
-                      <div className="flex items-center justify-between gap-3">
-                        {userEmail ? (
-                          <p className="min-w-0 truncate py-1 text-xs text-slate-500">
-                            {userEmail}
-                          </p>
-                        ) : null}
-                        <button
-                          className="shrink-0 rounded-full px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50"
-                          onClick={() => {
-                            closeAccount();
-                            supabase.auth.signOut();
-                          }}
-                          type="button"
-                        >
-                          Log out
-                        </button>
-                      </div>
-                      {!isStandaloneApp ? (
-                        <button
-                          className={`mt-3 flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 ${
-                            activeOnboardingAnnouncement?.target === "install"
-                              ? "pointer-events-none relative z-[80] ring-4 ring-emerald-300"
-                              : ""
-                          }`}
-                          onClick={() => {
-                            closeAccount();
-                            setInstallHelpOpen(true);
-                          }}
-                          ref={installOnboardingTargetRef}
-                          type="button"
-                        >
-                          <ShareIcon />
-                          Add to Home Screen
-                        </button>
-                      ) : null}
-                      <form
-                        className="mt-3 border-t border-slate-100 pt-3"
-                        onSubmit={saveUserProfile}
-                      >
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                          Profile
+                    <div className="flex items-center justify-between gap-3">
+                      {userEmail ? (
+                        <p className="min-w-0 truncate py-1 text-xs text-slate-500">
+                          {userEmail}
                         </p>
-                        <div className="mt-3 grid grid-cols-2 gap-2">
+                      ) : null}
+                      <button
+                        className="shrink-0 rounded-full px-2 py-1 text-xs font-semibold text-red-600 hover:bg-red-50"
+                        onClick={() => {
+                          closeAccount();
+                          supabase.auth.signOut();
+                        }}
+                        type="button"
+                      >
+                        Log out
+                      </button>
+                    </div>
+                    {!isStandaloneApp ? (
+                      <button
+                        className={`mt-3 flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 ${
+                          activeOnboardingAnnouncement?.target === "install"
+                            ? "pointer-events-none relative z-[80] ring-4 ring-emerald-300"
+                            : ""
+                        }`}
+                        onClick={() => {
+                          closeAccount();
+                          setInstallHelpOpen(true);
+                        }}
+                        ref={installOnboardingTargetRef}
+                        type="button"
+                      >
+                        <ShareIcon />
+                        Add to Home Screen
+                      </button>
+                    ) : null}
+                    <div
+                      aria-label="Account section"
+                      className={`mt-3 grid rounded-full bg-slate-100 p-1 ${
+                        visibleAccountSections.length === 3
+                          ? "grid-cols-3"
+                          : "grid-cols-2"
+                      }`}
+                      role="tablist"
+                    >
+                      {visibleAccountSections.map((section) => {
+                        const isActive = accountSection === section.id;
+
+                        return (
+                          <button
+                            aria-controls={`account-panel-${section.id}`}
+                            aria-selected={isActive}
+                            className={`rounded-full px-2 py-2 text-xs font-semibold transition ${
+                              isActive
+                                ? "bg-slate-950 text-white shadow-sm"
+                                : "text-slate-600"
+                            }`}
+                            key={section.id}
+                            onClick={() => selectAccountSection(section.id)}
+                            role="tab"
+                            type="button"
+                          >
+                            {section.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {accountSection === "profile" ? (
+                      <form
+                        className="mt-4"
+                        id="account-panel-profile"
+                        onSubmit={(event) =>
+                          saveUserProfile(event, "profile")
+                        }
+                        role="tabpanel"
+                      >
+                        <div className="grid grid-cols-2 gap-2">
                           <fieldset className="text-xs font-medium text-slate-600">
                             <legend>Height</legend>
-                            <div className="mt-1 grid grid-cols-2 gap-1">
-                              <input
-                                aria-label="Height feet"
-                                className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
-                                inputMode="numeric"
-                                min="0"
-                                onChange={(event) => {
-                                  const feet = getOptionalPositiveNumber(
-                                    event.target.value,
-                                  );
-                                  const inches =
-                                    typeof draftHeightInchesRemainder === "number"
-                                      ? draftHeightInchesRemainder
-                                      : 0;
+                            <div className="mt-1 grid grid-cols-2 gap-2">
+                              <label className="relative block">
+                                <input
+                                  aria-label="Height feet"
+                                  className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 pr-9 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                                  inputMode="numeric"
+                                  min="0"
+                                  onChange={(event) => {
+                                    const feet = getOptionalPositiveNumber(
+                                      event.target.value,
+                                    );
+                                    const inches =
+                                      typeof draftHeightInchesRemainder ===
+                                      "number"
+                                        ? draftHeightInchesRemainder
+                                        : 0;
 
-                                  updateDraftProfile({
-                                    heightInches: getHeightInchesFromParts(
-                                      feet,
-                                      inches,
-                                    ),
-                                  });
-                                }}
-                                placeholder="ft"
-                                step="1"
-                                type="number"
-                                value={draftHeightFeet}
-                              />
-                              <input
-                                aria-label="Height inches"
-                                className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
-                                inputMode="decimal"
-                                min="0"
-                                onChange={(event) => {
-                                  const feet =
-                                    typeof draftHeightFeet === "number"
-                                      ? draftHeightFeet
-                                      : 0;
-                                  const inches = getOptionalPositiveNumber(
-                                    event.target.value,
-                                  );
+                                    updateDraftProfile({
+                                      heightInches: getHeightInchesFromParts(
+                                        feet,
+                                        inches,
+                                      ),
+                                    });
+                                  }}
+                                  step="1"
+                                  type="number"
+                                  value={draftHeightFeet}
+                                />
+                                <span
+                                  aria-hidden="true"
+                                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400"
+                                >
+                                  ft
+                                </span>
+                              </label>
+                              <label className="relative block">
+                                <input
+                                  aria-label="Height inches"
+                                  className="h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 pr-9 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                                  inputMode="decimal"
+                                  min="0"
+                                  onChange={(event) => {
+                                    const feet =
+                                      typeof draftHeightFeet === "number"
+                                        ? draftHeightFeet
+                                        : 0;
+                                    const inches = getOptionalPositiveNumber(
+                                      event.target.value,
+                                    );
 
-                                  updateDraftProfile({
-                                    heightInches: getHeightInchesFromParts(
-                                      feet,
-                                      inches,
-                                    ),
-                                  });
-                                }}
-                                placeholder="in"
-                                step="0.5"
-                                type="number"
-                                value={draftHeightInchesRemainder}
-                              />
+                                    updateDraftProfile({
+                                      heightInches: getHeightInchesFromParts(
+                                        feet,
+                                        inches,
+                                      ),
+                                    });
+                                  }}
+                                  step="0.5"
+                                  type="number"
+                                  value={draftHeightInchesRemainder}
+                                />
+                                <span
+                                  aria-hidden="true"
+                                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400"
+                                >
+                                  in
+                                </span>
+                              </label>
                             </div>
                           </fieldset>
                           <label className="text-xs font-medium text-slate-600">
@@ -4851,40 +5171,135 @@ export default function Home() {
                           {profilePending ? "Saving..." : "Save profile"}
                         </button>
                       </form>
-                      {notificationUiAvailable ? (
-                        <button
-                          className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:bg-slate-50"
-                          onClick={openNotificationSettings}
-                          type="button"
-                        >
-                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-50 text-violet-700">
-                            <BellIcon />
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block text-sm font-semibold text-slate-900">
-                              Notifications
+                    ) : accountSection === "tracking" ? (
+                      <form
+                        className="mt-4"
+                        id="account-panel-tracking"
+                        onSubmit={(event) =>
+                          saveUserProfile(event, "tracking")
+                        }
+                        role="tabpanel"
+                      >
+                        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-sm font-semibold text-slate-900">
+                              Symptom tracking
                             </span>
-                          </span>
-                          <span
-                            aria-hidden="true"
-                            className="text-xl leading-none text-slate-400"
-                          >
-                            ›
-                          </span>
-                        </button>
-                      ) : null}
-                      </>
-                    ) : (
-                      <>
+                            <button
+                              aria-checked={
+                                draftProfile.symptomTrackingEnabled
+                              }
+                              aria-label="Show symptom tracking"
+                              className={`relative h-7 w-12 shrink-0 rounded-full transition ${
+                                draftProfile.symptomTrackingEnabled
+                                  ? "bg-rose-500"
+                                  : "bg-slate-300"
+                              }`}
+                              onClick={() =>
+                                updateDraftProfile({
+                                  symptomTrackingEnabled:
+                                    !draftProfile.symptomTrackingEnabled,
+                                })
+                              }
+                              role="switch"
+                              type="button"
+                            >
+                              <span
+                                className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition ${
+                                  draftProfile.symptomTrackingEnabled
+                                    ? "left-6"
+                                    : "left-1"
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-3 rounded-2xl border border-[#d8c9df] bg-[#faf7fb] p-3">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-sm font-semibold text-slate-900">
+                              Bowel movement tracking
+                            </span>
+                            <button
+                              aria-checked={
+                                draftProfile.bowelMovementTrackingEnabled
+                              }
+                              aria-label="Show bowel movement tracking"
+                              className={`relative h-7 w-12 shrink-0 rounded-full transition ${
+                                draftProfile.bowelMovementTrackingEnabled
+                                  ? "bg-[#7c5c8e]"
+                                  : "bg-slate-300"
+                              }`}
+                              onClick={() =>
+                                updateDraftProfile({
+                                  bowelMovementTrackingEnabled:
+                                    !draftProfile.bowelMovementTrackingEnabled,
+                                })
+                              }
+                              role="switch"
+                              type="button"
+                            >
+                              <span
+                                className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition ${
+                                  draftProfile.bowelMovementTrackingEnabled
+                                    ? "left-6"
+                                    : "left-1"
+                                }`}
+                              />
+                            </button>
+                          </div>
+                          {draftProfile.bowelMovementTrackingEnabled ? (
+                            <div className="ml-2 mt-3 border-l-2 border-[#d8c9df] pl-3">
+                              <div className="flex items-center justify-between gap-4 rounded-xl bg-white/80 p-2.5">
+                                <span className="text-sm font-medium text-slate-700">
+                                  Show on daily timelines
+                                </span>
+                                <button
+                                  aria-checked={
+                                    draftProfile.showBowelMovementsOnTimeline
+                                  }
+                                  aria-label="Show bowel movements on daily timelines"
+                                  className={`relative h-7 w-12 shrink-0 rounded-full transition ${
+                                    draftProfile.showBowelMovementsOnTimeline
+                                      ? "bg-[#7c5c8e]"
+                                      : "bg-slate-300"
+                                  }`}
+                                  onClick={() =>
+                                    updateDraftProfile({
+                                      showBowelMovementsOnTimeline:
+                                        !draftProfile.showBowelMovementsOnTimeline,
+                                    })
+                                  }
+                                  role="switch"
+                                  type="button"
+                                >
+                                  <span
+                                    className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition ${
+                                      draftProfile.showBowelMovementsOnTimeline
+                                        ? "left-6"
+                                        : "left-1"
+                                    }`}
+                                  />
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
                         <button
-                          className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100"
-                          onClick={cancelNotificationSettings}
-                          type="button"
+                          className="mt-4 w-full rounded-full bg-slate-950 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                          disabled={
+                            profilePending || !trackingPreferencesChanged
+                          }
+                          type="submit"
                         >
-                          <span aria-hidden="true">←</span>
-                          Account
+                          {profilePending ? "Saving..." : "Save tracking"}
                         </button>
-                        <section className="mt-3">
+                      </form>
+                    ) : (
+                        <section
+                          className="mt-4"
+                          id="account-panel-notifications"
+                          role="tabpanel"
+                        >
                           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                             Meal reminders
                           </p>
@@ -5048,7 +5463,6 @@ export default function Home() {
                             </button>
                           </div>
                         </section>
-                      </>
                     )}
                   </AccountContainer>
                 ) : null}
@@ -5115,7 +5529,9 @@ export default function Home() {
           </form>
         ) : (
           <>
-            <div className="grid grid-cols-3 gap-2 sm:gap-3">
+            <div
+              className={`grid ${actionGridColumnClassName} gap-2 sm:gap-3`}
+            >
               <button
                 className={`rounded-full border px-3 py-3 text-xs font-semibold sm:px-5 sm:text-sm ${
                   activeForm === "meal"
@@ -5134,36 +5550,42 @@ export default function Home() {
               >
                 + Meal
               </button>
-              <button
-                className={`rounded-full border px-3 py-3 text-xs font-semibold sm:px-5 sm:text-sm ${
-                  activeForm === "symptom"
-                    ? "border-rose-500 bg-rose-500 text-white"
-                    : "border-rose-500 bg-white text-rose-600"
-                }`}
-                onClick={() =>
-                  setActiveForm(activeForm === "symptom" ? null : "symptom")
-                }
-                type="button"
-              >
-                + Symptom
-              </button>
-              <button
-                className={`rounded-full border px-3 py-3 text-xs font-semibold sm:px-5 sm:text-sm ${
-                  activeForm === "bowel-movement"
-                    ? "border-[#b86645] bg-[#b86645] text-white"
-                    : "border-[#b86645] bg-white text-[#b86645]"
-                }`}
-                onClick={() =>
-                  setActiveForm(
+              {profile.symptomTrackingEnabled ? (
+                <button
+                  className={`rounded-full border px-3 py-3 text-xs font-semibold sm:px-5 sm:text-sm ${
+                    activeForm === "symptom"
+                      ? "border-rose-500 bg-rose-500 text-white"
+                      : "border-rose-500 bg-white text-rose-600"
+                  }`}
+                  onClick={() =>
+                    setActiveForm(
+                      activeForm === "symptom" ? null : "symptom",
+                    )
+                  }
+                  type="button"
+                >
+                  + Symptom
+                </button>
+              ) : null}
+              {profile.bowelMovementTrackingEnabled ? (
+                <button
+                  className={`rounded-full border px-3 py-3 text-xs font-semibold sm:px-5 sm:text-sm ${
                     activeForm === "bowel-movement"
-                      ? null
-                      : "bowel-movement",
-                  )
-                }
-                type="button"
-              >
-                + Poop
-              </button>
+                      ? "border-[#7c5c8e] bg-[#7c5c8e] text-white"
+                      : "border-[#7c5c8e] bg-white text-[#7c5c8e]"
+                  }`}
+                  onClick={() =>
+                    setActiveForm(
+                      activeForm === "bowel-movement"
+                        ? null
+                        : "bowel-movement",
+                    )
+                  }
+                  type="button"
+                >
+                  + BM
+                </button>
+              ) : null}
             </div>
 
             {activeForm === "meal" ? (
@@ -5238,7 +5660,7 @@ export default function Home() {
               </form>
             ) : null}
 
-            {activeForm === "symptom" ? (
+            {profile.symptomTrackingEnabled && activeForm === "symptom" ? (
               <form
                 className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"
                 onSubmit={submitSymptom}
@@ -5259,13 +5681,14 @@ export default function Home() {
               </form>
             ) : null}
 
-            {activeForm === "bowel-movement" ? (
+            {profile.bowelMovementTrackingEnabled &&
+            activeForm === "bowel-movement" ? (
               <form
                 className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"
                 onSubmit={submitBowelMovement}
               >
                 <textarea
-                  className="min-h-32 w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-base outline-none focus:ring-4 focus:ring-orange-100"
+                  className="min-h-32 w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-base outline-none focus:ring-4 focus:ring-[#eadff0]"
                   name="note"
                   placeholder="Anything you want to note? Optional."
                 />
@@ -5302,7 +5725,7 @@ export default function Home() {
                   </div>
                 )}
                 <button
-                  className="mt-3 w-full rounded-full bg-[#b86645] px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                  className="mt-3 w-full rounded-full bg-[#7c5c8e] px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
                   disabled={bowelMovementPending}
                   type="submit"
                 >
@@ -5349,7 +5772,8 @@ export default function Home() {
                 </section>
               ) : null}
 
-              {todayMeals.length === 0 ? (
+              {todayMeals.length === 0 &&
+              todayBowelMovements.length === 0 ? (
                 <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-7 text-center">
                   <div
                     aria-hidden="true"
@@ -5366,11 +5790,12 @@ export default function Home() {
                 </div>
               ) : (
                 <div className="mt-3">
-                  <MealTimeline
+                  <DailyTimeline
+                    bowelMovements={todayBowelMovements}
+                    itemsAriaLabel="Today's meals and bowel movements in chronological order"
                     meals={todayMeals}
-                    mealsAriaLabel="Today's meals in chronological order"
                     onOpenMeal={openTimelineMeal}
-                    timelineAriaLabel="Today's meal timeline"
+                    timelineAriaLabel="Today's timeline"
                   />
                 </div>
               )}
@@ -5384,13 +5809,13 @@ export default function Home() {
               </button>
 
               {showFullLog ? (
-                historyMealsByDay.length === 0 ? (
+                historyDailyTimelineGroups.length === 0 ? (
                   <p className="mt-3 text-sm text-slate-500">
-                    Previous meals will show up here.
+                    Previous days will show up here.
                   </p>
                 ) : (
                   <div className="mt-4 flex flex-col gap-5">
-                    {historyMealsByDay.map((group) => (
+                    {historyDailyTimelineGroups.map((group) => (
                       <div className="flex flex-col gap-3" key={group.dayKey}>
                         <h3 className="px-1 text-sm font-semibold text-slate-500">
                           {group.dayLabel}
@@ -5405,15 +5830,17 @@ export default function Home() {
                               group.meals,
                               trackedNutrients,
                             ),
+                            empty: group.meals.length === 0,
                             macros: getMealMacroTotals(group.meals),
                             plantCount: getUniquePlantCount(group.meals),
                           })}
                         </div>
-                        <MealTimeline
+                        <DailyTimeline
+                          bowelMovements={group.bowelMovements}
+                          itemsAriaLabel={`${group.dayLabel}'s meals and bowel movements in chronological order`}
                           meals={group.meals}
-                          mealsAriaLabel={`${group.dayLabel}'s meals in chronological order`}
                           onOpenMeal={openTimelineMeal}
-                          timelineAriaLabel={`${group.dayLabel} meal timeline`}
+                          timelineAriaLabel={`${group.dayLabel} timeline`}
                         />
                       </div>
                     ))}
@@ -5448,7 +5875,7 @@ export default function Home() {
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-bold text-emerald-800">
                 {activeOnboardingAnnouncement.target === "settings" ? (
-                  <SettingsIcon />
+                  <NutrientsIcon />
                 ) : null}
                 {activeOnboardingAnnouncement.target === "install" ? (
                   <ShareIcon />
@@ -5552,14 +5979,11 @@ export default function Home() {
       {accessToken && settingsOpen ? (
         <ToolbarModal
           onClose={closeSettings}
-          title="Settings"
+          title="Nutrients"
           widthClassName="max-w-md"
         >
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Nutrients
-              </p>
-              <div className="mt-2 divide-y divide-slate-100 rounded-2xl border border-slate-200">
+              <div className="divide-y divide-slate-100 rounded-2xl border border-slate-200">
                 {reconcileNutrientOrder(
                   draftNutrientOrder,
                   draftTrackedNutrients,
