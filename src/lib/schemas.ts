@@ -146,6 +146,53 @@ export const bowelMovementRecordSchema = z.object({
   summarizedAt: z.string().datetime().optional(),
 });
 
+export const reminderTimeSchema = z
+  .string()
+  .regex(
+    /^(?:[01]\d|2[0-3]):[0-5]\d$/,
+    "Reminder times must use 24-hour HH:mm format.",
+  );
+
+export const notificationDayPatternSchema = z.enum(["daily", "weekdays"]);
+
+export const notificationSettingsSchema = z.object({
+  enabled: z.boolean(),
+  timezone: z.string(),
+  dayPattern: notificationDayPatternSchema,
+  reminderTimes: z.array(reminderTimeSchema).max(12),
+  updatedAt: z.string().datetime().optional(),
+});
+
+export const pushSubscriptionSchema = z.object({
+  endpoint: z.string().url(),
+  expirationTime: z.number().nullable().optional(),
+  keys: z.object({
+    auth: z.string().min(1),
+    p256dh: z.string().min(1),
+  }),
+});
+
+export const notificationSettingsInputSchema = z
+  .object({
+    enabled: z.boolean(),
+    timezone: z.string().trim().min(1).max(100),
+    dayPattern: notificationDayPatternSchema,
+    reminderTimes: z
+      .array(reminderTimeSchema)
+      .max(12)
+      .transform((times) => [...new Set(times)].sort()),
+    subscription: pushSubscriptionSchema.optional(),
+  })
+  .superRefine((settings, context) => {
+    if (settings.enabled && settings.reminderTimes.length === 0) {
+      context.addIssue({
+        code: "custom",
+        message: "Add at least one reminder time before enabling reminders.",
+        path: ["reminderTimes"],
+      });
+    }
+  });
+
 export const mealInputSchema = z.object({
   description: z.string().trim().optional(),
   restaurantLink: optionalUrlSchema,
@@ -220,5 +267,10 @@ export type BowelMovementRecord = z.infer<typeof bowelMovementRecordSchema>;
 export type BowelMovementSummaryStatus = z.infer<
   typeof bowelMovementSummaryStatusSchema
 >;
+export type NotificationSettings = z.infer<typeof notificationSettingsSchema>;
+export type NotificationDayPattern = z.infer<
+  typeof notificationDayPatternSchema
+>;
+export type StoredPushSubscription = z.infer<typeof pushSubscriptionSchema>;
 export type TimelineItem = z.infer<typeof timelineItemSchema>;
 export type ReportSummary = z.infer<typeof reportSummarySchema>;

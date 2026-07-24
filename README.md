@@ -46,6 +46,12 @@ Required variables:
   `APP_ALLOWED_EMAIL` is still supported for a single email.
 - `OPENAI_API_KEY`: OpenAI API key for meal photo analysis.
 - `NEXT_PUBLIC_APP_URL`: app URL for the current environment.
+- `SUPABASE_SERVICE_ROLE_KEY`: server-only key used by the scheduled reminder
+  dispatcher.
+- `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT`:
+  Web Push credentials.
+- `NOTIFICATION_CRON_SECRET`: shared secret used to authenticate scheduled
+  reminder dispatches.
 
 5. Run the app:
 
@@ -67,6 +73,12 @@ Supabase is the source of truth:
   interrupted clients to reconnect without showing a false failure.
 - `symptoms`: independent timestamped symptom notes with severity, tags, and
   optional duration.
+- `bowel_movements`: timestamped bowel movement logs with optional notes,
+  private photos, and non-diagnostic image summaries.
+- `notification_settings`: each user's meal reminder schedule and timezone.
+- `push_subscriptions`: private per-device Web Push subscriptions.
+- `reminder_deliveries`: idempotency and delivery status for scheduled
+  reminders.
 - `meal-photos`: private storage bucket for uploaded meal photos. A meal can
   include up to six photos, all of which are used for nutrition estimation.
   Authenticated browsers upload the original files directly to this bucket;
@@ -100,6 +112,11 @@ APP_ALLOWED_EMAILS
 OPENAI_API_KEY
 NEXT_PUBLIC_APP_URL
 OPENAI_MODEL
+SUPABASE_SERVICE_ROLE_KEY
+NEXT_PUBLIC_VAPID_PUBLIC_KEY
+VAPID_PRIVATE_KEY
+VAPID_SUBJECT
+NOTIFICATION_CRON_SECRET
 ```
 
 For the current Vercel app:
@@ -110,3 +127,9 @@ OPENAI_MODEL=gpt-5.5
 ```
 
 After changing Vercel environment variables, redeploy the app.
+
+The push-notification migration creates a Supabase Cron job that runs every
+minute. Store the production app URL and the same cron secret in Supabase Vault
+under `notification_dispatch_url` and `notification_cron_secret`. On iPhone,
+Web Push requires iOS 16.4 or newer and the app must be launched from its Home
+Screen icon. Local notification testing also requires HTTPS.

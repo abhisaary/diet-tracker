@@ -16,6 +16,8 @@ import type {
   MealRecord,
   MealSubmission,
   MacroTotals,
+  NotificationDayPattern,
+  NotificationSettings,
   TrackedNutrient,
 } from "@/lib/schemas";
 import { createBrowserSupabaseClient } from "@/lib/supabase-browser";
@@ -57,6 +59,14 @@ type MacroCalorieKey = "carbsGrams" | "fatGrams" | "proteinGrams";
 type ActivityLevel = "general" | "very_active";
 type SexForEstimate = "female" | "male";
 type AnalyticsSection = "nutrition" | "plants" | "timing";
+type AccountSection = "profile" | "notifications";
+type MealReminderDraft = {
+  id: string;
+  time: string;
+};
+type NavigatorWithBadging = Navigator & {
+  clearAppBadge?: () => Promise<void>;
+};
 type OnboardingAnnouncement = {
   id: string;
   message: string;
@@ -236,6 +246,53 @@ function isRunningStandalone() {
     window.matchMedia("(display-mode: standalone)").matches ||
     Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone)
   );
+}
+
+function getLocalTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function getDefaultNotificationSettings(): NotificationSettings {
+  return {
+    dayPattern: "daily",
+    enabled: false,
+    reminderTimes: ["08:00", "12:30", "19:00"],
+    timezone: getLocalTimezone(),
+  };
+}
+
+function toMealReminderDrafts(times: string[]): MealReminderDraft[] {
+  return times.map((time, index) => ({
+    id: `${time}-${index}`,
+    time,
+  }));
+}
+
+function areNotificationSettingsEqual(
+  first: NotificationSettings,
+  second: NotificationSettings,
+) {
+  return (
+    first.enabled === second.enabled &&
+    first.timezone === second.timezone &&
+    first.dayPattern === second.dayPattern &&
+    areStringArraysEqual(first.reminderTimes, second.reminderTimes)
+  );
+}
+
+function urlBase64ToUint8Array(base64String: string) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding)
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+
+  for (let index = 0; index < rawData.length; index += 1) {
+    outputArray[index] = rawData.charCodeAt(index);
+  }
+
+  return outputArray;
 }
 
 const coreMacroItems: {
@@ -1289,6 +1346,24 @@ function ShareIcon() {
   );
 }
 
+function BellIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+      <path d="M10 21h4" />
+    </svg>
+  );
+}
+
 function toStatusMessage(
   kind: "error" | "success" | null,
   message: string | null,
@@ -1373,6 +1448,25 @@ export default function Home() {
   const [settingsPending, setSettingsPending] = useState(false);
   const [showFullLog, setShowFullLog] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [accountSection, setAccountSection] =
+    useState<AccountSection>("profile");
+  const [notificationSettings, setNotificationSettings] =
+    useState<NotificationSettings>(getDefaultNotificationSettings);
+  const [draftMealRemindersEnabled, setDraftMealRemindersEnabled] =
+    useState(false);
+  const [draftReminderDayPattern, setDraftReminderDayPattern] =
+    useState<NotificationDayPattern>("daily");
+  const [draftMealReminders, setDraftMealReminders] = useState<
+    MealReminderDraft[]
+  >([
+    { id: "morning", time: "08:00" },
+    { id: "midday", time: "12:30" },
+    { id: "evening", time: "19:00" },
+  ]);
+  const [notificationSettingsLoading, setNotificationSettingsLoading] =
+    useState(false);
+  const [notificationSettingsPending, setNotificationSettingsPending] =
+    useState(false);
   const [message, setMessage] = useState<{
     kind: "error" | "success";
     text: string;
@@ -1382,6 +1476,16 @@ export default function Home() {
   const [symptomPending, setSymptomPending] = useState(false);
   const [trackedNutrients, setTrackedNutrients] = useState<TrackedNutrient[]>([]);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const isDevelopment = process.env.NODE_ENV === "development";
+  const notificationPushAvailable =
+    typeof window !== "undefined" &&
+    "Notification" in window &&
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    window.isSecureContext &&
+    (isStandaloneApp || isDevelopment);
+  const notificationUiAvailable =
+    isDevelopment || notificationPushAvailable;
 
   function showMessage(nextMessage: { kind: "error" | "success"; text: string }) {
     setMessageVisible(true);
@@ -1598,6 +1702,12 @@ export default function Home() {
         setProfile(defaultUserProfile);
         setDraftProfile(defaultUserProfile);
         setAccountMenuOpen(false);
+        setNotificationSettings(getDefaultNotificationSettings());
+        setDraftMealRemindersEnabled(false);
+        setDraftReminderDayPattern("daily");
+        setDraftMealReminders(
+          toMealReminderDrafts(getDefaultNotificationSettings().reminderTimes),
+        );
         setAnalyticsOpen(false);
         setSettingsOpen(false);
         setTrackedNutrients([]);
@@ -1614,10 +1724,34 @@ export default function Home() {
     const updateStandaloneMode = () =>
       setIsStandaloneApp(isRunningStandalone());
 
+    updateStandaloneMode();
     displayModeQuery.addEventListener("change", updateStandaloneMode);
 
     return () =>
       displayModeQuery.removeEventListener("change", updateStandaloneMode);
+  }, []);
+
+  useEffect(() => {
+    if (notificationPushAvailable) {
+      navigator.serviceWorker
+        .register("/sw.js", {
+          scope: "/",
+          updateViaCache: "none",
+        })
+        .catch((error) => {
+          console.error("Could not register notification service worker:", error);
+        });
+    }
+  }, [notificationPushAvailable]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+
+    if (url.searchParams.get("form") === "meal") {
+      url.searchParams.delete("form");
+      window.history.replaceState(null, "", url);
+      window.setTimeout(() => setActiveForm("meal"), 0);
+    }
   }, []);
 
   useEffect(() => {
@@ -1827,13 +1961,24 @@ export default function Home() {
     setDraftTrackedNutrients(trackedNutrients);
   }
 
+  function resetNotificationDraft(
+    settings: NotificationSettings = notificationSettings,
+  ) {
+    setDraftMealRemindersEnabled(settings.enabled);
+    setDraftReminderDayPattern(settings.dayPattern);
+    setDraftMealReminders(toMealReminderDrafts(settings.reminderTimes));
+  }
+
   function closeAccount() {
     setAccountMenuOpen(false);
+    setAccountSection("profile");
+    resetNotificationDraft();
   }
 
   function openAccount() {
     setAnalyticsOpen(false);
     setSettingsOpen(false);
+    setAccountSection("profile");
     setAccountMenuOpen(true);
   }
 
@@ -1918,6 +2063,152 @@ export default function Home() {
     }
 
     return fetch(input, { ...init, headers });
+  }
+
+  async function loadNotificationSettings() {
+    if (!accessToken) {
+      return;
+    }
+
+    setNotificationSettingsLoading(true);
+
+    try {
+      const timezone = encodeURIComponent(getLocalTimezone());
+      const response = await authenticatedFetch(
+        `/api/notifications?timezone=${timezone}`,
+      );
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data.error ?? "Could not load notification settings.",
+        );
+      }
+
+      const settings = data.settings as NotificationSettings;
+      setNotificationSettings(settings);
+      resetNotificationDraft(settings);
+    } catch (error) {
+      showMessage({
+        kind: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "Could not load notification settings.",
+      });
+    } finally {
+      setNotificationSettingsLoading(false);
+    }
+  }
+
+  function openNotificationSettings() {
+    setAccountSection("notifications");
+    void loadNotificationSettings();
+  }
+
+  function cancelNotificationSettings() {
+    resetNotificationDraft();
+    setAccountSection("profile");
+  }
+
+  async function clearMealReminderBadge() {
+    const navigatorWithBadging = navigator as NavigatorWithBadging;
+
+    await navigatorWithBadging.clearAppBadge?.().catch(() => undefined);
+  }
+
+  async function saveMealReminderSettings() {
+    setNotificationSettingsPending(true);
+
+    try {
+      let serializedSubscription: PushSubscriptionJSON | undefined;
+
+      if (draftMealRemindersEnabled) {
+        if (!notificationPushAvailable) {
+          if (!window.isSecureContext) {
+            throw new Error(
+              "Meal reminders require HTTPS. You can preview these settings over local HTTP, but Web Push cannot be enabled.",
+            );
+          }
+
+          throw new Error(
+            "Meal reminders require a secure, installed app with Web Push support.",
+          );
+        }
+
+        const permission =
+          Notification.permission === "default"
+            ? await Notification.requestPermission()
+            : Notification.permission;
+
+        if (permission !== "granted") {
+          throw new Error(
+            permission === "denied"
+              ? "Notifications are blocked in this device's settings."
+              : "Allow notifications to enable meal reminders.",
+          );
+        }
+
+        const registration = await navigator.serviceWorker.ready;
+        let subscription = await registration.pushManager.getSubscription();
+
+        if (!subscription) {
+          const vapidPublicKey =
+            process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+
+          if (!vapidPublicKey) {
+            throw new Error("Push notifications are not configured yet.");
+          }
+
+          subscription = await registration.pushManager.subscribe({
+            applicationServerKey: urlBase64ToUint8Array(vapidPublicKey),
+            userVisibleOnly: true,
+          });
+        }
+
+        serializedSubscription = subscription.toJSON();
+      }
+
+      const reminderTimes = draftMealReminders
+        .map((reminder) => reminder.time)
+        .sort();
+      const response = await authenticatedFetch("/api/notifications", {
+        body: JSON.stringify({
+          dayPattern: draftReminderDayPattern,
+          enabled: draftMealRemindersEnabled,
+          reminderTimes,
+          subscription: serializedSubscription,
+          timezone: getLocalTimezone(),
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "PUT",
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(
+          data.error ?? "Could not save notification settings.",
+        );
+      }
+
+      const settings = data.settings as NotificationSettings;
+      setNotificationSettings(settings);
+      resetNotificationDraft(settings);
+
+      if (!settings.enabled) {
+        await clearMealReminderBadge();
+      }
+    } catch (error) {
+      showMessage({
+        kind: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "Could not save notification settings.",
+      });
+    } finally {
+      setNotificationSettingsPending(false);
+    }
   }
 
   async function removeUploadedMealPhotos(photos: UploadedMealPhoto[]) {
@@ -2636,6 +2927,7 @@ export default function Home() {
         totalMs: roundMilliseconds(performance.now() - latencyStartedAt),
       });
       latencyLogged = true;
+      await clearMealReminderBadge();
 
       if (response.status !== 202) {
         showMessage({ kind: "success", text: "Meal saved." });
@@ -2823,6 +3115,18 @@ export default function Home() {
     !areStringArraysEqual(hiddenCoreNutrients, draftHiddenCoreNutrients) ||
     !areStringArraysEqual(savedNutrientOrder, draftSavedNutrientOrder) ||
     !areTrackedNutrientsEqual(trackedNutrients, draftTrackedNutrients);
+  const draftNotificationSettings: NotificationSettings = {
+    dayPattern: draftReminderDayPattern,
+    enabled: draftMealRemindersEnabled,
+    reminderTimes: draftMealReminders
+      .map((reminder) => reminder.time)
+      .sort(),
+    timezone: getLocalTimezone(),
+  };
+  const notificationSettingsChanged = !areNotificationSettingsEqual(
+    notificationSettings,
+    draftNotificationSettings,
+  );
   const profileChanged = !areProfilesEqual(profile, draftProfile);
   const mealsByDay = meals.reduce<
     { dayKey: string; dayLabel: string; meals: MealRecord[] }[]
@@ -3923,9 +4227,15 @@ export default function Home() {
                 {accountMenuOpen ? (
                   <AccountContainer
                     onClose={closeAccount}
-                    title="Account"
+                    title={
+                      accountSection === "notifications"
+                        ? "Notifications"
+                        : "Account"
+                    }
                     widthClassName="max-w-md"
                   >
+                    {accountSection === "profile" ? (
+                      <>
                       <div className="flex items-center justify-between gap-3">
                         {userEmail ? (
                           <p className="min-w-0 truncate py-1 text-xs text-slate-500">
@@ -4112,6 +4422,205 @@ export default function Home() {
                           {profilePending ? "Saving..." : "Save profile"}
                         </button>
                       </form>
+                      {notificationUiAvailable ? (
+                        <button
+                          className="mt-4 flex w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:bg-slate-50"
+                          onClick={openNotificationSettings}
+                          type="button"
+                        >
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet-50 text-violet-700">
+                            <BellIcon />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm font-semibold text-slate-900">
+                              Notifications
+                            </span>
+                          </span>
+                          <span
+                            aria-hidden="true"
+                            className="text-xl leading-none text-slate-400"
+                          >
+                            ›
+                          </span>
+                        </button>
+                      ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                          onClick={cancelNotificationSettings}
+                          type="button"
+                        >
+                          <span aria-hidden="true">←</span>
+                          Account
+                        </button>
+                        <section className="mt-3">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Meal reminders
+                          </p>
+                          <div className="mt-3 rounded-2xl border border-slate-200 p-3">
+                            <div className="flex items-center justify-between gap-4">
+                              <p className="text-sm font-semibold text-slate-900">
+                                Remind me to log meals
+                              </p>
+                              <button
+                                aria-checked={draftMealRemindersEnabled}
+                                aria-label="Enable meal reminders"
+                                className={`relative h-7 w-12 shrink-0 rounded-full transition disabled:opacity-50 ${
+                                  draftMealRemindersEnabled
+                                    ? "bg-emerald-500"
+                                    : "bg-slate-300"
+                                }`}
+                                disabled={notificationSettingsLoading}
+                                onClick={() =>
+                                  setDraftMealRemindersEnabled(
+                                    (value) => !value,
+                                  )
+                                }
+                                role="switch"
+                                type="button"
+                              >
+                                <span
+                                  className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition ${
+                                    draftMealRemindersEnabled
+                                      ? "left-6"
+                                      : "left-1"
+                                  }`}
+                                />
+                              </button>
+                            </div>
+                            <div className="mt-3 grid grid-cols-2 rounded-xl bg-slate-100 p-1">
+                              {(
+                                [
+                                  ["daily", "Every day"],
+                                  ["weekdays", "Weekdays"],
+                                ] as const
+                              ).map(([value, label]) => (
+                                <button
+                                  className={`rounded-lg px-3 py-2 text-xs font-semibold transition disabled:opacity-50 ${
+                                    draftReminderDayPattern === value
+                                      ? "bg-white text-slate-950 shadow-sm"
+                                      : "text-slate-500"
+                                  }`}
+                                  disabled={
+                                    !draftMealRemindersEnabled ||
+                                    notificationSettingsLoading
+                                  }
+                                  key={value}
+                                  onClick={() =>
+                                    setDraftReminderDayPattern(value)
+                                  }
+                                  type="button"
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                            <div className="mt-3 space-y-2">
+                              {draftMealReminders.map((reminder, index) => (
+                                <div
+                                  className="flex items-center gap-2 rounded-xl bg-slate-50 p-1.5"
+                                  key={reminder.id}
+                                >
+                                  <input
+                                    aria-label={`Reminder ${index + 1} time`}
+                                    className="h-10 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-center text-sm text-slate-950 outline-none focus:ring-4 focus:ring-emerald-100 disabled:opacity-50"
+                                    disabled={
+                                      !draftMealRemindersEnabled ||
+                                      notificationSettingsLoading
+                                    }
+                                    onChange={(event) =>
+                                      setDraftMealReminders((current) =>
+                                        current
+                                          .map((item) =>
+                                            item.id === reminder.id
+                                              ? {
+                                                  ...item,
+                                                  time: event.target.value,
+                                                }
+                                              : item,
+                                          )
+                                          .sort((a, b) =>
+                                            a.time.localeCompare(b.time),
+                                          ),
+                                      )
+                                    }
+                                    type="time"
+                                    value={reminder.time}
+                                  />
+                                  <button
+                                    aria-label={`Remove reminder ${index + 1}`}
+                                    className="flex h-10 w-10 items-center justify-center rounded-xl text-lg text-slate-400 transition hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                                    disabled={
+                                      !draftMealRemindersEnabled ||
+                                      notificationSettingsLoading
+                                    }
+                                    onClick={() =>
+                                      setDraftMealReminders((current) =>
+                                        current.filter(
+                                          (item) => item.id !== reminder.id,
+                                        ),
+                                      )
+                                    }
+                                    type="button"
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                            <button
+                              className="mt-3 w-full rounded-full border border-dashed border-slate-300 px-4 py-2 text-xs font-semibold text-slate-500 disabled:opacity-50"
+                              disabled={
+                                !draftMealRemindersEnabled ||
+                                notificationSettingsLoading
+                              }
+                              onClick={() =>
+                                setDraftMealReminders((current) =>
+                                  [
+                                    ...current,
+                                    {
+                                      id: crypto.randomUUID(),
+                                      time: "16:00",
+                                    },
+                                  ].sort((a, b) =>
+                                    a.time.localeCompare(b.time),
+                                  ),
+                                )
+                              }
+                              type="button"
+                            >
+                              + Add reminder
+                            </button>
+                          </div>
+                          <div className="mt-4 grid grid-cols-2 gap-3">
+                            <button
+                              className="rounded-full border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-950"
+                              disabled={notificationSettingsPending}
+                              onClick={cancelNotificationSettings}
+                              type="button"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                              disabled={
+                                notificationSettingsLoading ||
+                                notificationSettingsPending ||
+                                !notificationSettingsChanged
+                              }
+                              onClick={saveMealReminderSettings}
+                              type="button"
+                            >
+                              {notificationSettingsPending
+                                ? "Saving..."
+                                : "Save"}
+                            </button>
+                          </div>
+                        </section>
+                      </>
+                    )}
                   </AccountContainer>
                 ) : null}
               </div>
