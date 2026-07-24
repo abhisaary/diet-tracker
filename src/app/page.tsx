@@ -71,7 +71,7 @@ type NavigatorWithBadging = Navigator & {
 type OnboardingAnnouncement = {
   id: string;
   message: string;
-  target: "install" | "meal" | "settings";
+  target: "install" | "meal" | "settings" | "tracking";
   targetLabel: string;
   title: string;
 };
@@ -185,30 +185,11 @@ function ToolbarModal({
   );
 }
 
-function OnboardingAccountDropdown({
-  children,
-  onClose,
-}: ToolbarModalProps) {
-  return (
-    <>
-      <button
-        aria-label="Close account menu"
-        className="fixed inset-0 z-10 cursor-default"
-        onClick={onClose}
-        type="button"
-      />
-      <div className="absolute right-0 top-12 z-auto w-72 rounded-2xl border border-slate-200 bg-white p-3 text-sm shadow-lg">
-        {children}
-      </div>
-    </>
-  );
-}
-
 const onboardingAnnouncements: OnboardingAnnouncement[] = [
   {
     id: "meal-entry-v1",
     message:
-      "Add any combination of text and photos that gives the model enough context to estimate your meal. Include approximate portions when they aren’t obvious. If you’re entering a meal later, tell the model when you ate it—for example, “lunch around 1 PM.” It can use your description, images, recent meal history, and online searches for restaurant menus or packaged foods, so you can reference restaurants or products or upload screenshots of menus. Write naturally—the app will clean up and structure your entry, so grammar and formatting don’t matter. Estimates are approximate, and you can correct them afterward.",
+      "Add a photo, description, or both. Include portions and when you ate if logging later. Restaurant names and menu screenshots work too, and you can correct estimates afterward.",
     target: "meal",
     targetLabel: "+ Meal",
     title: "Add meals with maximal laziness",
@@ -228,6 +209,14 @@ const onboardingAnnouncements: OnboardingAnnouncement[] = [
     target: "install",
     targetLabel: "Add to Home Screen",
     title: "Create an app shortcut",
+  },
+  {
+    id: "optional-tracking-v1",
+    message:
+      "You can also track gut symptoms and bowel movements by enabling them in Tracking settings.",
+    target: "tracking",
+    targetLabel: "Tracking",
+    title: "Add the tracking you want",
   },
 ];
 
@@ -541,6 +530,7 @@ function formatDurationMinutes(value: number | null) {
 const calendarDayEndMinutes = 24 * 60;
 const timelineEdgePaddingMinutes = 30;
 const minimumTimelineHeight = 240;
+const minimumTodayTimelineHeight = minimumTimelineHeight / 2;
 const maximumTimelineHeight = 540;
 const timelinePixelsPerHour = 30;
 const timelineLabelEdge = 22;
@@ -605,6 +595,7 @@ function formatTimelineTime(minutes: number) {
 function getDailyTimelineLayout(
   meals: MealRecord[],
   bowelMovements: BowelMovementRecord[],
+  minimumHeight = minimumTimelineHeight,
 ): DailyTimelineLayout {
   const entries: DailyTimelineEntry[] = [
     ...meals.map((meal) => ({
@@ -630,7 +621,7 @@ function getDailyTimelineLayout(
       domainStartMinutes: 0,
       guides: [],
       items: [],
-      plotHeight: minimumTimelineHeight,
+      plotHeight: minimumHeight,
     };
   }
 
@@ -658,11 +649,11 @@ function getDailyTimelineLayout(
     44;
   const plotHeight =
     entries.length === 1
-      ? minimumTimelineHeight
+      ? minimumHeight
       : Math.min(
           maximumTimelineHeight,
           Math.max(
-            minimumTimelineHeight,
+            minimumHeight,
             spanBasedHeight,
             densityBasedHeight,
           ),
@@ -765,16 +756,22 @@ function DailyTimeline({
   bowelMovements,
   itemsAriaLabel,
   meals,
+  minimumHeight,
   onOpenMeal,
   timelineAriaLabel,
 }: {
   bowelMovements: BowelMovementRecord[];
   itemsAriaLabel: string;
   meals: MealRecord[];
+  minimumHeight?: number;
   onOpenMeal: (meal: MealRecord) => void;
   timelineAriaLabel: string;
 }) {
-  const layout = getDailyTimelineLayout(meals, bowelMovements);
+  const layout = getDailyTimelineLayout(
+    meals,
+    bowelMovements,
+    minimumHeight,
+  );
 
   return (
     <section
@@ -1833,8 +1830,9 @@ export default function Home() {
   const mealLoadSequenceRef = useRef(0);
   const bowelMovementLoadSequenceRef = useRef(0);
   const analyticsSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
-  const onboardingModalRef = useRef<HTMLElement | null>(null);
+  const onboardingTooltipRef = useRef<HTMLElement | null>(null);
   const settingsOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
+  const trackingOnboardingTargetRef = useRef<HTMLFormElement | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [activeForm, setActiveForm] = useState<
     "bowel-movement" | "meal" | "symptom" | null
@@ -2043,6 +2041,11 @@ export default function Home() {
     setActiveOnboardingId(announcement?.id ?? null);
 
     if (announcement?.target === "install") {
+      setAccountMenuOpen(true);
+    } else if (announcement?.target === "tracking") {
+      setAnalyticsOpen(false);
+      setSettingsOpen(false);
+      setAccountSection("tracking");
       setAccountMenuOpen(true);
     }
   }
@@ -2346,16 +2349,12 @@ export default function Home() {
       return;
     }
 
-    const scrollPosition = activeOnboardingId ? 0 : window.scrollY;
+    const scrollPosition = window.scrollY;
     const previousBodyOverflow = document.body.style.overflow;
     const previousBodyPosition = document.body.style.position;
     const previousBodyTop = document.body.style.top;
     const previousBodyWidth = document.body.style.width;
     const previousDocumentOverflow = document.documentElement.style.overflow;
-
-    if (activeOnboardingId) {
-      window.scrollTo(0, 0);
-    }
 
     document.body.style.overflow = "hidden";
     document.body.style.position = "fixed";
@@ -2387,52 +2386,106 @@ export default function Home() {
     : [];
   const activeOnboardingAnnouncement =
     onboardingAnnouncements.find(({ id }) => id === activeOnboardingId) ?? null;
-  const AccountContainer =
-    activeOnboardingAnnouncement?.target === "install"
-      ? OnboardingAccountDropdown
-      : ToolbarModal;
 
   useEffect(() => {
     if (!activeOnboardingAnnouncement) {
       return;
     }
 
-    const modal = onboardingModalRef.current;
+    const tooltip = onboardingTooltipRef.current;
     const target =
       activeOnboardingAnnouncement.target === "meal"
         ? mealOnboardingTargetRef.current
         : activeOnboardingAnnouncement.target === "settings"
           ? settingsOnboardingTargetRef.current
-          : installOnboardingTargetRef.current;
+          : activeOnboardingAnnouncement.target === "tracking"
+            ? trackingOnboardingTargetRef.current
+            : installOnboardingTargetRef.current;
 
-    if (!modal || !target) {
+    if (!tooltip || !target) {
       return;
     }
 
-    const updateModalTop = () => {
-      const targetBottom = target.getBoundingClientRect().bottom;
-      const viewportHeight =
-        window.visualViewport?.height ?? window.innerHeight;
-      modal.style.setProperty(
-        "--onboarding-modal-top",
-        `${Math.ceil(targetBottom + 16)}px`,
-      );
-      modal.style.setProperty(
-        "--onboarding-modal-max-height",
-        `${Math.max(240, Math.floor(viewportHeight - targetBottom - 32))}px`,
-      );
-    };
-    const frameId = window.requestAnimationFrame(updateModalTop);
+    const updateTooltipPosition = () => {
+      if (!target.isConnected) {
+        tooltip.style.visibility = "hidden";
+        return;
+      }
 
-    window.addEventListener("resize", updateModalTop);
-    window.visualViewport?.addEventListener("resize", updateModalTop);
-    window.visualViewport?.addEventListener("scroll", updateModalTop);
+      const gap = 12;
+      const viewportPadding = 12;
+      const visualViewport = window.visualViewport;
+      const viewportLeft = visualViewport?.offsetLeft ?? 0;
+      const viewportTop = visualViewport?.offsetTop ?? 0;
+      const viewportWidth = visualViewport?.width ?? window.innerWidth;
+      const viewportHeight = visualViewport?.height ?? window.innerHeight;
+      const viewportRight = viewportLeft + viewportWidth;
+      const viewportBottom = viewportTop + viewportHeight;
+      const targetRect = target.getBoundingClientRect();
+      const tooltipRect = tooltip.getBoundingClientRect();
+      const spaceBelow = viewportBottom - targetRect.bottom - gap;
+      const spaceAbove = targetRect.top - viewportTop - gap;
+      const placeBelow =
+        spaceBelow >= tooltipRect.height || spaceBelow >= spaceAbove;
+      const unclampedTop = placeBelow
+        ? targetRect.bottom + gap
+        : targetRect.top - tooltipRect.height - gap;
+      const top = Math.min(
+        Math.max(unclampedTop, viewportTop + viewportPadding),
+        viewportBottom - tooltipRect.height - viewportPadding,
+      );
+      const unclampedLeft =
+        targetRect.left + targetRect.width / 2 - tooltipRect.width / 2;
+      const left = Math.min(
+        Math.max(unclampedLeft, viewportLeft + viewportPadding),
+        viewportRight - tooltipRect.width - viewportPadding,
+      );
+      const arrow = tooltip.querySelector<HTMLElement>(
+        "[data-onboarding-arrow]",
+      );
+
+      tooltip.style.left = `${Math.round(left)}px`;
+      tooltip.style.top = `${Math.round(top)}px`;
+      tooltip.dataset.placement = placeBelow ? "below" : "above";
+      tooltip.style.visibility = "visible";
+
+      if (arrow) {
+        const arrowLeft = Math.min(
+          Math.max(
+            targetRect.left + targetRect.width / 2 - left - 6,
+            18,
+          ),
+          tooltipRect.width - 30,
+        );
+
+        arrow.style.left = `${Math.round(arrowLeft)}px`;
+        arrow.style.top = placeBelow ? "-6px" : "auto";
+        arrow.style.bottom = placeBelow ? "auto" : "-6px";
+      }
+    };
+    const frameId = window.requestAnimationFrame(updateTooltipPosition);
+    const resizeObserver = new ResizeObserver(updateTooltipPosition);
+
+    resizeObserver.observe(target);
+    resizeObserver.observe(tooltip);
+    window.addEventListener("resize", updateTooltipPosition);
+    window.addEventListener("scroll", updateTooltipPosition, true);
+    window.visualViewport?.addEventListener("resize", updateTooltipPosition);
+    window.visualViewport?.addEventListener("scroll", updateTooltipPosition);
 
     return () => {
       window.cancelAnimationFrame(frameId);
-      window.removeEventListener("resize", updateModalTop);
-      window.visualViewport?.removeEventListener("resize", updateModalTop);
-      window.visualViewport?.removeEventListener("scroll", updateModalTop);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", updateTooltipPosition);
+      window.removeEventListener("scroll", updateTooltipPosition, true);
+      window.visualViewport?.removeEventListener(
+        "resize",
+        updateTooltipPosition,
+      );
+      window.visualViewport?.removeEventListener(
+        "scroll",
+        updateTooltipPosition,
+      );
     };
   }, [activeOnboardingAnnouncement]);
 
@@ -4908,7 +4961,7 @@ export default function Home() {
                   settingsOpen ? "ring-4 ring-emerald-100" : ""
                 } ${
                   activeOnboardingAnnouncement?.target === "settings"
-                    ? "pointer-events-none relative z-[80] ring-4 ring-emerald-300"
+                    ? "pointer-events-none ring-4 ring-emerald-300"
                     : ""
                 }`}
                 onClick={() => (settingsOpen ? closeSettings() : openSettings())}
@@ -4932,8 +4985,13 @@ export default function Home() {
                   {(userEmail?.[0] ?? "U").toUpperCase()}
                 </button>
                 {accountMenuOpen ? (
-                  <AccountContainer
-                    onClose={closeAccount}
+                  <ToolbarModal
+                    onClose={
+                      activeOnboardingAnnouncement?.target === "install" ||
+                      activeOnboardingAnnouncement?.target === "tracking"
+                        ? () => undefined
+                        : closeAccount
+                    }
                     title="Account"
                     widthClassName="max-w-md"
                   >
@@ -4958,7 +5016,7 @@ export default function Home() {
                       <button
                         className={`mt-3 flex w-full items-center justify-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 ${
                           activeOnboardingAnnouncement?.target === "install"
-                            ? "pointer-events-none relative z-[80] ring-4 ring-emerald-300"
+                            ? "pointer-events-none ring-4 ring-emerald-300"
                             : ""
                         }`}
                         onClick={() => {
@@ -5173,11 +5231,16 @@ export default function Home() {
                       </form>
                     ) : accountSection === "tracking" ? (
                       <form
-                        className="mt-4"
+                        className={`mt-4 ${
+                          activeOnboardingAnnouncement?.target === "tracking"
+                            ? "relative rounded-2xl bg-white ring-4 ring-emerald-300"
+                            : ""
+                        }`}
                         id="account-panel-tracking"
                         onSubmit={(event) =>
                           saveUserProfile(event, "tracking")
                         }
+                        ref={trackingOnboardingTargetRef}
                         role="tabpanel"
                       >
                         <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3">
@@ -5464,7 +5527,7 @@ export default function Home() {
                           </div>
                         </section>
                     )}
-                  </AccountContainer>
+                  </ToolbarModal>
                 ) : null}
               </div>
             </div>
@@ -5539,7 +5602,7 @@ export default function Home() {
                     : "border-emerald-500 bg-white text-emerald-700"
                 } ${
                   activeOnboardingAnnouncement?.target === "meal"
-                    ? "pointer-events-none relative z-[80] ring-4 ring-emerald-300"
+                    ? "pointer-events-none ring-4 ring-emerald-300"
                     : ""
                 }`}
                 onClick={() =>
@@ -5794,6 +5857,7 @@ export default function Home() {
                     bowelMovements={todayBowelMovements}
                     itemsAriaLabel="Today's meals and bowel movements in chronological order"
                     meals={todayMeals}
+                    minimumHeight={minimumTodayTimelineHeight}
                     onOpenMeal={openTimelineMeal}
                     timelineAriaLabel="Today's timeline"
                   />
@@ -5852,51 +5916,65 @@ export default function Home() {
         )}
       </div>
       {accessToken && activeOnboardingAnnouncement ? (
-        <div className="fixed inset-0 z-[70] overflow-hidden overscroll-none bg-slate-950/50 sm:flex sm:items-center sm:justify-center sm:p-4">
-          <button
-            aria-label="Dismiss onboarding message"
-            className="absolute inset-0 h-full w-full cursor-default"
-            onClick={dismissActiveOnboarding}
-            type="button"
+        <>
+          <div
+            aria-hidden="true"
+            className="fixed inset-0 z-[70] touch-none bg-slate-950/20"
           />
           <section
             aria-labelledby="onboarding-title"
-            aria-modal="true"
-            className="absolute left-1/2 top-[var(--onboarding-modal-top,15rem)] z-10 flex max-h-[var(--onboarding-modal-max-height,calc(100dvh-16rem))] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 flex-col overflow-hidden rounded-3xl bg-white p-6 shadow-xl sm:relative sm:inset-auto sm:max-h-[calc(100dvh-2rem)] sm:w-full sm:translate-x-0"
-            ref={onboardingModalRef}
+            className="fixed left-3 top-3 z-[80] invisible w-[calc(100%-1.5rem)] max-w-xs rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"
+            key={activeOnboardingAnnouncement.id}
+            ref={onboardingTooltipRef}
             role="dialog"
           >
-            <h2
-              className="text-2xl font-semibold tracking-tight"
-              id="onboarding-title"
-            >
-              {activeOnboardingAnnouncement.title}
-            </h2>
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 font-bold text-emerald-800">
-                {activeOnboardingAnnouncement.target === "settings" ? (
-                  <NutrientsIcon />
-                ) : null}
-                {activeOnboardingAnnouncement.target === "install" ? (
-                  <ShareIcon />
-                ) : null}
-                {activeOnboardingAnnouncement.targetLabel}
-              </span>
+            <span
+              aria-hidden="true"
+              className="absolute h-3 w-3 rotate-45 border border-slate-200 bg-white"
+              data-onboarding-arrow
+            />
+            <div className="relative flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-700">
+                  {onboardingAnnouncements.findIndex(
+                    ({ id }) => id === activeOnboardingAnnouncement.id,
+                  ) + 1}{" "}
+                  of {onboardingAnnouncements.length} ·{" "}
+                  {activeOnboardingAnnouncement.targetLabel}
+                </p>
+                <h2
+                  className="mt-1 text-base font-semibold tracking-tight"
+                  id="onboarding-title"
+                >
+                  {activeOnboardingAnnouncement.title}
+                </h2>
+              </div>
+              <button
+                aria-label="Dismiss onboarding message"
+                className="-mr-1 -mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-lg leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                onClick={dismissActiveOnboarding}
+                type="button"
+              >
+                ×
+              </button>
             </div>
-            <div className="mt-3 min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain [-webkit-overflow-scrolling:touch]">
-              <p className="pr-1 text-sm leading-7 text-slate-600">
-                {activeOnboardingAnnouncement.message}
-              </p>
+            <p className="relative mt-2 text-xs leading-5 text-slate-600">
+              {activeOnboardingAnnouncement.message}
+            </p>
+            <div className="relative mt-3 flex justify-end">
+              <button
+                className="rounded-full bg-slate-950 px-4 py-2 text-xs font-semibold text-white"
+                onClick={dismissActiveOnboarding}
+                type="button"
+              >
+                {activeOnboardingAnnouncement.id ===
+                onboardingAnnouncements.at(-1)?.id
+                  ? "Done"
+                  : "Next"}
+              </button>
             </div>
-            <button
-              className="mt-5 w-full shrink-0 rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
-              onClick={dismissActiveOnboarding}
-              type="button"
-            >
-              Continue
-            </button>
           </section>
-        </div>
+        </>
       ) : null}
       {accessToken && installHelpOpen ? (
         <div className="fixed inset-0 z-[60] flex items-center justify-center overscroll-contain bg-slate-950/50 p-4">
