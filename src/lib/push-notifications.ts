@@ -97,15 +97,14 @@ async function sendToSubscription(
       },
       JSON.stringify({
         badge: 1,
-        body: "Time to log a meal.",
+        body: "Don't forget to log your meal 🍱",
         icon: "/icon.png",
         tag: "meal-reminder",
-        title: "Meal reminder",
+        title: "It's food'o'clock 😋",
         url: "/?form=meal",
       }),
       {
         TTL: 60 * 60,
-        topic: "meal-reminder",
         urgency: "normal",
       },
     );

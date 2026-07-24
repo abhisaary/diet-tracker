@@ -16,9 +16,9 @@ self.addEventListener("push", (event) => {
   }
 
   const showNotification = self.registration.showNotification(
-    payload.title || "Meal reminder",
+    payload.title || "It's food'o'clock 😋",
     {
-      body: payload.body || "Time to log a meal.",
+      body: payload.body || "Don't forget to log your meal 🍱",
       data: {
         url: payload.url || "/?form=meal",
       },
