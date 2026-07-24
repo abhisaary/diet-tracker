@@ -148,10 +148,10 @@ function ToolbarModal({
         role="dialog"
       >
         <header className="flex shrink-0 items-center justify-between gap-4">
-          <h2 className="text-lg font-semibold">{title}</h2>
+          <h2 className="min-w-0 truncate text-lg font-semibold">{title}</h2>
           <button
             aria-label={`Close ${title.toLowerCase()}`}
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 text-slate-500"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-slate-200 text-slate-500"
             onClick={onClose}
             type="button"
           >
@@ -524,6 +524,336 @@ function formatDurationMinutes(value: number | null) {
   const minutes = roundedMinutes % 60;
 
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}
+
+const calendarDayEndMinutes = 24 * 60;
+const timelineEdgePaddingMinutes = 30;
+const minimumTimelineHeight = 240;
+const maximumTimelineHeight = 540;
+const timelinePixelsPerHour = 30;
+const timelineLabelEdge = 22;
+const timelineLabelMaxGap = 50;
+const canonicalTimelineGuideMinutes = Array.from(
+  { length: 8 },
+  (_, index) => index * 3 * 60,
+);
+
+type MealTimelineGuide = {
+  label: string;
+  position: number;
+};
+
+type MealTimelineItem = {
+  dense: boolean;
+  labelCenter: number;
+  labelHeight: number;
+  markerOffset: number;
+  markerPosition: number;
+  meal: MealRecord;
+};
+
+type MealTimelineLayout = {
+  domainEndMinutes: number;
+  domainStartMinutes: number;
+  guides: MealTimelineGuide[];
+  items: MealTimelineItem[];
+  plotHeight: number;
+};
+
+function formatTimelineTime(minutes: number) {
+  if (minutes === calendarDayEndMinutes) {
+    return "Midnight";
+  }
+
+  if (minutes === 12 * 60) {
+    return "Noon";
+  }
+
+  const date = new Date(2000, 0, 1, 0, minutes);
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "numeric",
+    minute: minutes % 60 === 0 ? undefined : "2-digit",
+  }).format(date);
+}
+
+function getMealTimelineLayout(meals: MealRecord[]): MealTimelineLayout {
+  if (meals.length === 0) {
+    return {
+      domainEndMinutes: timelineEdgePaddingMinutes * 2,
+      domainStartMinutes: 0,
+      guides: [],
+      items: [],
+      plotHeight: minimumTimelineHeight,
+    };
+  }
+
+  const sortedMeals = [...meals].sort(
+    (first, second) =>
+      new Date(first.eatenAt).getTime() - new Date(second.eatenAt).getTime(),
+  );
+  const mealMinutes = sortedMeals.map((meal) =>
+    getMinutesOfDay(meal.eatenAt),
+  );
+  const earliestMealMinutes = Math.min(...mealMinutes);
+  const latestMealMinutes = Math.max(...mealMinutes);
+  const domainStartMinutes = Math.max(
+    0,
+    earliestMealMinutes - timelineEdgePaddingMinutes,
+  );
+  const domainEndMinutes = Math.min(
+    calendarDayEndMinutes,
+    latestMealMinutes + timelineEdgePaddingMinutes,
+  );
+
+  const domainDuration = domainEndMinutes - domainStartMinutes;
+  const spanBasedHeight = Math.round(
+    (domainDuration / 60) * timelinePixelsPerHour,
+  );
+  const densityBasedHeight =
+    timelineLabelEdge * 2 +
+    Math.max(0, meals.length - 1) * timelineLabelMaxGap +
+    44;
+  const plotHeight =
+    meals.length === 1
+      ? minimumTimelineHeight
+      : Math.min(
+          maximumTimelineHeight,
+          Math.max(
+            minimumTimelineHeight,
+            spanBasedHeight,
+            densityBasedHeight,
+          ),
+        );
+  const markerPositions = sortedMeals.map((meal) => {
+    const minutes = getMinutesOfDay(meal.eatenAt);
+
+    return Math.min(
+      1,
+      Math.max(0, (minutes - domainStartMinutes) / domainDuration),
+    );
+  });
+  const minimumLabelCenter = timelineLabelEdge;
+  const maximumLabelCenter = plotHeight - timelineLabelEdge;
+  const availableLabelRange = maximumLabelCenter - minimumLabelCenter;
+  const labelGap =
+    meals.length > 1
+      ? Math.min(
+          timelineLabelMaxGap,
+          availableLabelRange / (meals.length - 1),
+        )
+      : timelineLabelMaxGap;
+  const labelHeight = Math.min(44, Math.max(24, labelGap - 3));
+  const labelCenters = markerPositions.map(
+    (position) => position * plotHeight,
+  );
+
+  if (labelCenters.length > 0) {
+    labelCenters[0] = Math.max(labelCenters[0], minimumLabelCenter);
+
+    for (let index = 1; index < labelCenters.length; index += 1) {
+      labelCenters[index] = Math.max(
+        labelCenters[index],
+        labelCenters[index - 1] + labelGap,
+      );
+    }
+
+    if (labelCenters[labelCenters.length - 1] > maximumLabelCenter) {
+      labelCenters[labelCenters.length - 1] = maximumLabelCenter;
+
+      for (let index = labelCenters.length - 2; index >= 0; index -= 1) {
+        labelCenters[index] = Math.min(
+          labelCenters[index],
+          labelCenters[index + 1] - labelGap,
+        );
+      }
+    }
+  }
+
+  const markerOffsets = markerPositions.map((position, index) => {
+    if (
+      index === 0 ||
+      (position - markerPositions[index - 1]) * plotHeight >= 12
+    ) {
+      return 0;
+    }
+
+    const clusteredOffsets = [6, -6, 10, -10, 3, -3, 8, -8];
+    let clusterIndex = 0;
+
+    for (
+      let previousIndex = index - 1;
+      previousIndex >= 0 &&
+      (markerPositions[previousIndex + 1] -
+        markerPositions[previousIndex]) *
+        plotHeight <
+        12;
+      previousIndex -= 1
+    ) {
+      clusterIndex += 1;
+    }
+
+    return clusteredOffsets[(clusterIndex - 1) % clusteredOffsets.length];
+  });
+  const guideMinutes = canonicalTimelineGuideMinutes.filter(
+    (minutes) =>
+      minutes > domainStartMinutes && minutes < domainEndMinutes,
+  );
+
+  return {
+    domainEndMinutes,
+    domainStartMinutes,
+    guides: guideMinutes.map((minutes) => ({
+      label: formatTimelineTime(minutes),
+      position: (minutes - domainStartMinutes) / domainDuration,
+    })),
+    items: sortedMeals.map((meal, index) => ({
+      dense: labelHeight < 38,
+      labelCenter: labelCenters[index] ?? timelineLabelEdge,
+      labelHeight,
+      markerOffset: markerOffsets[index],
+      markerPosition: markerPositions[index],
+      meal,
+    })),
+    plotHeight,
+  };
+}
+
+function MealTimeline({
+  meals,
+  mealsAriaLabel,
+  onOpenMeal,
+  timelineAriaLabel,
+}: {
+  meals: MealRecord[];
+  mealsAriaLabel: string;
+  onOpenMeal: (meal: MealRecord) => void;
+  timelineAriaLabel: string;
+}) {
+  const layout = getMealTimelineLayout(meals);
+
+  return (
+    <section
+      aria-label={timelineAriaLabel}
+      className="rounded-2xl border border-slate-100 bg-slate-50 p-3"
+    >
+      <div
+        aria-label={`${timelineAriaLabel} from ${formatTimelineTime(
+          layout.domainStartMinutes,
+        )} to ${formatTimelineTime(layout.domainEndMinutes)}`}
+        className="relative"
+        role="group"
+        style={{ height: `${layout.plotHeight}px` }}
+      >
+        <span
+          aria-hidden="true"
+          className="absolute bottom-0 left-10 top-0 w-px bg-slate-200"
+        />
+        {layout.guides.map((guide) => (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute left-0 right-0"
+            key={`${guide.label}-${guide.position}`}
+            style={{ top: `${guide.position * 100}%` }}
+          >
+            <span className="absolute left-8 right-0 border-t border-dashed border-slate-200" />
+            <span className="absolute left-0 w-9 -translate-y-1/2 whitespace-nowrap text-[10px] font-semibold leading-3 text-slate-400">
+              {guide.label}
+            </span>
+          </div>
+        ))}
+        <svg
+          aria-hidden="true"
+          className="pointer-events-none absolute left-8 top-0 h-full w-8 overflow-visible"
+          preserveAspectRatio="none"
+          viewBox={`0 0 32 ${layout.plotHeight}`}
+        >
+          {layout.items.map((item) => (
+            <line
+              key={item.meal.id}
+              stroke="#94a3b8"
+              strokeLinecap="round"
+              strokeOpacity="0.7"
+              strokeWidth="1"
+              vectorEffect="non-scaling-stroke"
+              x1={8 + item.markerOffset}
+              x2="32"
+              y1={item.markerPosition * layout.plotHeight}
+              y2={item.labelCenter}
+            />
+          ))}
+        </svg>
+        <ol aria-label={mealsAriaLabel} className="absolute inset-0">
+          {layout.items.map((item) => {
+            const mealTitle = getMealTitle(item.meal);
+            const mealTime = formatMealTimeOfDay(item.meal.eatenAt);
+            const hasCautions =
+              (item.meal.nutrition.cautions?.length ?? 0) > 0;
+
+            return (
+              <li
+                className="pointer-events-none absolute inset-0"
+                key={item.meal.id}
+              >
+                <span
+                  aria-hidden="true"
+                  className="absolute z-10 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-emerald-500 shadow-[0_0_0_1px_#6ee7b7]"
+                  style={{
+                    left: `calc(2.5rem + ${item.markerOffset}px)`,
+                    top: `${item.markerPosition * 100}%`,
+                  }}
+                />
+                <button
+                  aria-haspopup="dialog"
+                  aria-label={`Open meal details for ${mealTitle} at ${mealTime}${
+                    hasCautions ? ", meal caution" : ""
+                  }`}
+                  className={`pointer-events-auto absolute left-16 right-0 z-20 -translate-y-1/2 overflow-hidden rounded-xl border bg-white px-2 text-left shadow-sm outline-none focus-visible:ring-4 focus-visible:ring-emerald-100 ${
+                    hasCautions ? "border-amber-200" : "border-slate-200"
+                  }`}
+                  onClick={() => onOpenMeal(item.meal)}
+                  style={{
+                    height: `${item.labelHeight}px`,
+                    paddingRight: hasCautions ? "1.75rem" : undefined,
+                    top: `${(item.labelCenter / layout.plotHeight) * 100}%`,
+                  }}
+                  type="button"
+                >
+                  {hasCautions ? (
+                    <span
+                      aria-hidden="true"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 text-amber-500"
+                    >
+                      <CautionIcon />
+                    </span>
+                  ) : null}
+                  {item.dense ? (
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-900">
+                        {mealTitle}
+                      </span>
+                      <span className="shrink-0 text-[10px] font-medium text-slate-500">
+                        {mealTime}
+                      </span>
+                    </span>
+                  ) : (
+                    <>
+                      <span className="block truncate text-xs font-semibold leading-4 text-slate-900">
+                        {mealTitle}
+                      </span>
+                      <span className="block text-[10px] font-medium leading-3 text-slate-500">
+                        {mealTime}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+    </section>
+  );
 }
 
 function formatPrimaryIngredientAmount(amount: string) {
@@ -1462,6 +1792,9 @@ export default function Home() {
   const [settingsPending, setSettingsPending] = useState(false);
   const [showFullLog, setShowFullLog] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [timelineMealModalId, setTimelineMealModalId] = useState<string | null>(
+    null,
+  );
   const [accountSection, setAccountSection] =
     useState<AccountSection>("profile");
   const [notificationSettings, setNotificationSettings] =
@@ -1890,7 +2223,8 @@ export default function Home() {
       !analyticsOpen &&
       !accountMenuOpen &&
       !activeOnboardingId &&
-      !installHelpOpen
+      !installHelpOpen &&
+      !timelineMealModalId
     ) {
       return;
     }
@@ -1926,6 +2260,7 @@ export default function Home() {
     analyticsOpen,
     installHelpOpen,
     settingsOpen,
+    timelineMealModalId,
   ]);
 
   const missingConfig = status
@@ -2692,6 +3027,9 @@ export default function Home() {
 
       setEditingMealId((current) => (current === mealId ? null : current));
       setExpandedMealId((current) => (current === mealId ? null : current));
+      setTimelineMealModalId((current) =>
+        current === mealId ? null : current,
+      );
       await loadMeals();
       showMessage({ kind: "success", text: "Meal deleted." });
     } catch (error) {
@@ -3115,7 +3453,14 @@ export default function Home() {
     }
   }
 
-  const todayMeals = meals.filter(isMealToday);
+  const todayMeals = meals
+    .filter(isMealToday)
+    .sort(
+      (first, second) =>
+        new Date(first.eatenAt).getTime() - new Date(second.eatenAt).getTime(),
+    );
+  const timelineModalMeal =
+    meals.find((meal) => meal.id === timelineMealModalId) ?? null;
   const todayMacros = getMealMacroTotals(todayMeals);
   const todayCustomNutrients = getCustomNutrientItems(
     todayMeals,
@@ -3934,14 +4279,40 @@ export default function Home() {
         }`}
       >
         {isError ? null : (
-          <span className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-600" />
+          <span className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-600 motion-reduce:animate-none" />
         )}
         {label}
       </div>
     );
   }
 
-  function renderMealCard(meal: MealRecord) {
+  function closeTimelineMealModal() {
+    const mealId = timelineMealModalId;
+
+    setTimelineMealModalId(null);
+    setEditingMealId((current) => (current === mealId ? null : current));
+    setExpandedMealId((current) => (current === mealId ? null : current));
+  }
+
+  function openTimelineMeal(meal: MealRecord) {
+    setExpandedMealId(meal.id);
+    setTimelineMealModalId(meal.id);
+  }
+
+  function renderMealCard(
+    meal: MealRecord,
+    {
+      bare = false,
+      compactWhenCollapsed = false,
+      forceExpanded = false,
+      hideHeading = false,
+    }: {
+      bare?: boolean;
+      compactWhenCollapsed?: boolean;
+      forceExpanded?: boolean;
+      hideHeading?: boolean;
+    } = {},
+  ) {
     const macros = getMealMacros(meal);
     const customNutrients = getCustomNutrientItems([meal], trackedNutrients);
     const ingredients =
@@ -3959,18 +4330,64 @@ export default function Home() {
     });
     const cautions = meal.nutrition.cautions ?? [];
     const isEditing = editingMealId === meal.id;
-    const isExpanded = expandedMealId === meal.id || isEditing;
+    const isExpanded =
+      forceExpanded || expandedMealId === meal.id || isEditing;
+    const detailsId = `meal-details-${meal.id}`;
+    const showSummaryNutrients = !compactWhenCollapsed || isExpanded;
+    const cardHeader = (
+      <>
+        {hideHeading ? (
+          <p className="text-xs font-medium text-slate-500">
+            {formatMealTimeOfDay(meal.eatenAt)}
+          </p>
+        ) : (
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <h3 className="truncate text-base font-semibold text-slate-950">
+                {getMealTitle(meal)}
+              </h3>
+              <p className="mt-1 text-xs font-medium text-slate-500">
+                {formatMealTimeOfDay(meal.eatenAt)}
+              </p>
+            </div>
+            {!forceExpanded ? (
+              <span
+                aria-hidden="true"
+                className="shrink-0 rounded-full p-1 text-slate-500"
+              >
+                <ChevronIcon direction={isExpanded ? "up" : "down"} />
+              </span>
+            ) : null}
+          </div>
+        )}
+        {showSummaryNutrients
+          ? renderNutrientGrid({
+              className: "mt-2",
+              customNutrients,
+              macros,
+            })
+          : null}
+      </>
+    );
 
     return (
       <article
-        className={`relative rounded-2xl border bg-slate-50 p-3 ${
-          cautions.length > 0
-            ? "border-amber-200 shadow-[0_0_0_1px_rgba(251,191,36,0.14)]"
-            : "border-slate-100"
-        }`}
+        className={
+          bare
+            ? "relative"
+            : `relative rounded-2xl border p-3 ${
+                compactWhenCollapsed && !isExpanded
+                  ? "bg-white shadow-sm"
+                  : "bg-slate-50"
+              } ${
+                cautions.length > 0
+                  ? "border-amber-200 shadow-[0_0_0_1px_rgba(251,191,36,0.14)]"
+                  : "border-slate-100"
+              }`
+        }
         key={meal.id}
       >
-        {cautions.length > 0 ? (
+        {cautions.length > 0 && !bare ? (
           <span
             aria-label="Meal caution"
             className="absolute -right-1.5 -top-1.5 rounded-full border border-amber-200 bg-white p-1.5 text-amber-600 shadow-sm"
@@ -3979,41 +4396,28 @@ export default function Home() {
             <CautionIcon />
           </span>
         ) : null}
-        <div className="flex items-start gap-2">
-          <button
-            className="min-w-0 flex-1 text-left"
-            aria-label={`${isExpanded ? "Collapse" : "Expand"} ${getMealTitle(meal)}`}
-            onClick={() => setExpandedMealId(isExpanded ? null : meal.id)}
-            type="button"
-          >
-            <div className="min-w-0">
-              <h3 className="truncate text-base font-semibold text-slate-950">
-                {getMealTitle(meal)}
-              </h3>
-              <p className="mt-1 text-xs font-medium text-slate-500">
-                {formatMealTimeOfDay(meal.eatenAt)}
-              </p>
-            </div>
-            {renderNutrientGrid({
-              className: "mt-2",
-              customNutrients,
-              macros,
-            })}
-          </button>
-          <div className="flex shrink-0 items-center gap-1">
+        <div className="flex items-start">
+          {forceExpanded ? (
+            <div className="min-w-0 flex-1">{cardHeader}</div>
+          ) : (
             <button
+              aria-controls={detailsId}
+              aria-expanded={isExpanded}
               aria-label={`${isExpanded ? "Collapse" : "Expand"} ${getMealTitle(meal)}`}
-              className="rounded-full p-1 text-slate-500"
+              className="min-w-0 flex-1 rounded-xl text-left outline-none focus-visible:ring-4 focus-visible:ring-emerald-100"
               onClick={() => setExpandedMealId(isExpanded ? null : meal.id)}
               type="button"
             >
-              <ChevronIcon direction={isExpanded ? "up" : "down"} />
+              {cardHeader}
             </button>
-          </div>
+          )}
         </div>
 
         {isExpanded ? (
-          <div className="mt-3 border-t border-slate-200 pt-3">
+          <div
+            className="mt-3 border-t border-slate-200 pt-3"
+            id={detailsId}
+          >
             {!isEditing ? (
               <>
                 <div className="flex items-start gap-3">
@@ -4910,12 +5314,12 @@ export default function Home() {
             <section className="rounded-3xl border border-slate-200 bg-white p-3 shadow-sm">
               <h2 className="text-lg font-semibold">Today&apos;s Meals</h2>
 
-              <div className="mt-3 rounded-2xl bg-emerald-50 p-3">
+              <div className="mt-3 rounded-2xl bg-emerald-50 px-3 py-2">
                 <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
                   Today total
                 </p>
                 {renderNutrientGrid({
-                  className: "mt-2",
+                  className: "mt-1",
                   customNutrients: todayCustomNutrients,
                   empty: todayMeals.length === 0,
                   macros: todayMacros,
@@ -4923,14 +5327,51 @@ export default function Home() {
                 })}
               </div>
 
-              {todayMeals.length === 0 && pendingMealSubmissions.length === 0 ? (
-                <p className="mt-3 text-sm text-slate-500">
-                  Meals you log today will show up here.
-                </p>
+              {pendingMealSubmissions.length > 0 ? (
+                <section
+                  aria-labelledby="pending-meals-title"
+                  className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <h3
+                      className="text-xs font-semibold uppercase tracking-wide text-slate-600"
+                      id="pending-meals-title"
+                    >
+                      Pending
+                    </h3>
+                    <span className="text-xs text-slate-400">
+                      Not on timeline yet
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-col gap-2">
+                    {pendingMealSubmissions.map(renderPendingMealCard)}
+                  </div>
+                </section>
+              ) : null}
+
+              {todayMeals.length === 0 ? (
+                <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-7 text-center">
+                  <div
+                    aria-hidden="true"
+                    className="mx-auto flex h-9 w-9 items-center justify-center rounded-full bg-emerald-100"
+                  >
+                    <span className="h-2.5 w-2.5 rounded-full border-2 border-white bg-emerald-500 shadow-sm" />
+                  </div>
+                  <p className="mt-3 text-sm font-semibold text-slate-800">
+                    No eating window yet
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
+                    Your first completed meal will start today&apos;s timeline.
+                  </p>
+                </div>
               ) : (
-                <div className="mt-3 flex flex-col gap-2">
-                  {pendingMealSubmissions.map(renderPendingMealCard)}
-                  {todayMeals.map(renderMealCard)}
+                <div className="mt-3">
+                  <MealTimeline
+                    meals={todayMeals}
+                    mealsAriaLabel="Today's meals in chronological order"
+                    onOpenMeal={openTimelineMeal}
+                    timelineAriaLabel="Today's meal timeline"
+                  />
                 </div>
               )}
 
@@ -4954,12 +5395,12 @@ export default function Home() {
                         <h3 className="px-1 text-sm font-semibold text-slate-500">
                           {group.dayLabel}
                         </h3>
-                        <div className="rounded-2xl bg-emerald-50 p-3">
+                        <div className="rounded-2xl bg-emerald-50 px-3 py-2">
                           <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
                             Day total
                           </p>
                           {renderNutrientGrid({
-                            className: "mt-2",
+                            className: "mt-1",
                             customNutrients: getCustomNutrientItems(
                               group.meals,
                               trackedNutrients,
@@ -4968,7 +5409,12 @@ export default function Home() {
                             plantCount: getUniquePlantCount(group.meals),
                           })}
                         </div>
-                        {group.meals.map(renderMealCard)}
+                        <MealTimeline
+                          meals={group.meals}
+                          mealsAriaLabel={`${group.dayLabel}'s meals in chronological order`}
+                          onOpenMeal={openTimelineMeal}
+                          timelineAriaLabel={`${group.dayLabel} meal timeline`}
+                        />
                       </div>
                     ))}
                   </div>
@@ -5090,6 +5536,18 @@ export default function Home() {
             </button>
           </section>
         </div>
+      ) : null}
+      {accessToken && timelineModalMeal ? (
+        <ToolbarModal
+          onClose={closeTimelineMealModal}
+          title={getMealTitle(timelineModalMeal)}
+        >
+          {renderMealCard(timelineModalMeal, {
+            bare: true,
+            forceExpanded: true,
+            hideHeading: true,
+          })}
+        </ToolbarModal>
       ) : null}
       {accessToken && settingsOpen ? (
         <ToolbarModal
