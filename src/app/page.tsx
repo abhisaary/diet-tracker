@@ -1389,6 +1389,20 @@ function toStatusMessage(
   );
 }
 
+async function clearMealReminderBadge() {
+  const clearAppBadge = (navigator as NavigatorWithBadging).clearAppBadge;
+
+  if (typeof clearAppBadge !== "function") {
+    return;
+  }
+
+  try {
+    await clearAppBadge.call(navigator);
+  } catch {
+    // Badging is optional and can be rejected by the browser or OS.
+  }
+}
+
 export default function Home() {
   const supabase = useMemo(() => createBrowserSupabaseClient(), []);
   const installOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
@@ -1743,6 +1757,23 @@ export default function Home() {
         });
     }
   }, [notificationPushAvailable]);
+
+  useEffect(() => {
+    function clearBadgeWhenVisible() {
+      if (document.visibilityState === "visible") {
+        void clearMealReminderBadge();
+      }
+    }
+
+    clearBadgeWhenVisible();
+    document.addEventListener("visibilitychange", clearBadgeWhenVisible);
+    window.addEventListener("focus", clearBadgeWhenVisible);
+
+    return () => {
+      document.removeEventListener("visibilitychange", clearBadgeWhenVisible);
+      window.removeEventListener("focus", clearBadgeWhenVisible);
+    };
+  }, []);
 
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -2109,12 +2140,6 @@ export default function Home() {
   function cancelNotificationSettings() {
     resetNotificationDraft();
     setAccountSection("profile");
-  }
-
-  async function clearMealReminderBadge() {
-    const navigatorWithBadging = navigator as NavigatorWithBadging;
-
-    await navigatorWithBadging.clearAppBadge?.().catch(() => undefined);
   }
 
   async function saveMealReminderSettings() {

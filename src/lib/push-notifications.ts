@@ -97,10 +97,10 @@ async function sendToSubscription(
       },
       JSON.stringify({
         badge: 1,
-        body: "Don't forget to log your meal 🍱",
+        body: "Don’t forget to log your meal 😋",
         icon: "/icon.png",
         tag: "meal-reminder",
-        title: "It's food'o'clock 😋",
+        title: "It’s food’o’clock!",
         url: "/?form=meal",
       }),
       {
