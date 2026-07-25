@@ -767,6 +767,7 @@ function DailyTimeline({
   minimumHeight,
   onOpenMeal,
   timelineAriaLabel,
+  updatingMealId = null,
 }: {
   bowelMovements: BowelMovementRecord[];
   itemsAriaLabel: string;
@@ -774,6 +775,7 @@ function DailyTimeline({
   minimumHeight?: number;
   onOpenMeal: (meal: MealRecord) => void;
   timelineAriaLabel: string;
+  updatingMealId?: string | null;
 }) {
   const layout = getDailyTimelineLayout(
     meals,
@@ -875,6 +877,7 @@ function DailyTimeline({
             const mealTitle = getMealTitle(meal);
             const hasCautions =
               (meal.nutrition.cautions?.length ?? 0) > 0;
+            const isUpdating = updatingMealId === meal.id;
 
             return (
               <li
@@ -892,20 +895,36 @@ function DailyTimeline({
                 <button
                   aria-haspopup="dialog"
                   aria-label={`Open meal details for ${mealTitle} at ${itemTime}${
-                    hasCautions ? ", meal caution" : ""
+                    isUpdating
+                      ? ", updating nutrition"
+                      : hasCautions
+                        ? ", meal caution"
+                        : ""
                   }`}
-                  className={`pointer-events-auto absolute left-16 right-0 z-20 -translate-y-1/2 overflow-hidden rounded-xl border bg-white px-2 text-left shadow-sm outline-none focus-visible:ring-4 focus-visible:ring-emerald-100 ${
-                    hasCautions ? "border-amber-200" : "border-slate-200"
+                  className={`pointer-events-auto absolute left-16 right-0 z-20 -translate-y-1/2 overflow-hidden rounded-xl border px-2 text-left shadow-sm outline-none focus-visible:ring-4 focus-visible:ring-emerald-100 ${
+                    isUpdating
+                      ? "border-slate-200 bg-slate-50"
+                      : hasCautions
+                        ? "border-amber-200 bg-white"
+                        : "border-slate-200 bg-white"
                   }`}
                   onClick={() => onOpenMeal(meal)}
                   style={{
                     height: `${item.labelHeight}px`,
-                    paddingRight: hasCautions ? "1.75rem" : undefined,
+                    paddingRight:
+                      hasCautions || isUpdating ? "1.75rem" : undefined,
                     top: `${(item.labelCenter / layout.plotHeight) * 100}%`,
                   }}
                   type="button"
                 >
-                  {hasCautions ? (
+                  {isUpdating ? (
+                    <span
+                      aria-hidden="true"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2"
+                    >
+                      <span className="block h-3 w-3 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-600 motion-reduce:animate-none" />
+                    </span>
+                  ) : hasCautions ? (
                     <span
                       aria-hidden="true"
                       className="absolute right-1.5 top-1/2 -translate-y-1/2 text-amber-500"
@@ -3268,7 +3287,6 @@ export default function Home() {
         stages: latencyStages,
         totalMs: roundMilliseconds(performance.now() - latencyStartedAt),
       });
-      showMessage({ kind: "success", text: "Correction applied." });
     } catch (error) {
       logClientMealLatency({
         metadata: latencyMetadata,
@@ -4658,13 +4676,22 @@ export default function Home() {
     const mealId = timelineMealModalId;
 
     setTimelineMealModalId(null);
-    setEditingMealId((current) => (current === mealId ? null : current));
     setExpandedMealId((current) => (current === mealId ? null : current));
+
+    // Keep edit mode while a correction is still saving so reopening shows
+    // the updating state instead of the stale meal details.
+    if (savingMealId !== mealId) {
+      setEditingMealId((current) => (current === mealId ? null : current));
+    }
   }
 
   function openTimelineMeal(meal: MealRecord) {
     setExpandedMealId(meal.id);
     setTimelineMealModalId(meal.id);
+
+    if (savingMealId === meal.id) {
+      setEditingMealId(meal.id);
+    }
   }
 
   function renderMealCard(
@@ -4697,7 +4724,8 @@ export default function Home() {
       trackedNutrients,
     });
     const cautions = meal.nutrition.cautions ?? [];
-    const isEditing = editingMealId === meal.id;
+    const isUpdating = savingMealId === meal.id;
+    const isEditing = editingMealId === meal.id || isUpdating;
     const isExpanded =
       forceExpanded || expandedMealId === meal.id || isEditing;
     const detailsId = `meal-details-${meal.id}`;
@@ -4786,7 +4814,18 @@ export default function Home() {
             className="mt-3 border-t border-slate-200 pt-3"
             id={detailsId}
           >
-            {!isEditing ? (
+            {isUpdating ? (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <p className="text-sm font-semibold text-slate-950">
+                  Updating meal
+                </p>
+                <p className="mt-1 text-sm leading-5 text-slate-600">
+                  Applying your correction and recalculating ingredients and
+                  macros.
+                </p>
+                {renderProcessingPill("Updating nutrition...")}
+              </div>
+            ) : !isEditing ? (
               <>
                 <div className="flex items-start gap-3">
                   <p className="min-w-0 flex-1 text-sm leading-6 text-slate-700">
@@ -4905,61 +4944,45 @@ export default function Home() {
                     ))}
                   </ul>
                 </div>
-
               </>
             ) : (
               <>
-                {savingMealId === meal.id ? (
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                    <p className="text-sm font-semibold text-slate-950">
-                      Updating meal
-                    </p>
-                    <p className="mt-1 text-sm leading-5 text-slate-600">
-                      Applying your correction and recalculating ingredients and
-                      macros.
-                    </p>
-                    {renderProcessingPill("Updating nutrition...")}
-                  </div>
-                ) : (
-                  <>
-                    <label className="block text-sm font-medium text-slate-700">
-                      Correction
-                      <textarea
-                        className="mt-2 min-h-24 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
-                        onChange={(event) =>
-                          updateMealCorrection(meal.id, event.target.value)
-                        }
-                        placeholder="e.g. actually it had full-fat yogurt, or closer to 5 tbsp peanut butter"
-                        value={mealCorrections[meal.id] ?? ""}
-                      />
-                    </label>
-                    <p className="mt-2 text-xs leading-5 text-slate-500">
-                      The model will apply this note to the existing meal,
-                      recompute ingredients and macros, and keep the result
-                      structured.
-                    </p>
+                <label className="block text-sm font-medium text-slate-700">
+                  Correction
+                  <textarea
+                    className="mt-2 min-h-24 w-full rounded-2xl border border-slate-200 bg-white p-3 text-sm outline-none focus:ring-4 focus:ring-emerald-100"
+                    onChange={(event) =>
+                      updateMealCorrection(meal.id, event.target.value)
+                    }
+                    placeholder="e.g. actually it had full-fat yogurt, or closer to 5 tbsp peanut butter"
+                    value={mealCorrections[meal.id] ?? ""}
+                  />
+                </label>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  The model will apply this note to the existing meal,
+                  recompute ingredients and macros, and keep the result
+                  structured.
+                </p>
 
-                    <div className="mt-3 grid grid-cols-2 gap-3">
-                      <button
-                        className="rounded-full border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-950"
-                        onClick={() => {
-                          setEditingMealId(null);
-                          updateMealCorrection(meal.id, "");
-                        }}
-                        type="button"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
-                        onClick={() => saveMealCorrection(meal.id)}
-                        type="button"
-                      >
-                        Apply
-                      </button>
-                    </div>
-                  </>
-                )}
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <button
+                    className="rounded-full border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-950"
+                    onClick={() => {
+                      setEditingMealId(null);
+                      updateMealCorrection(meal.id, "");
+                    }}
+                    type="button"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="rounded-full bg-slate-950 px-5 py-3 text-sm font-semibold text-white"
+                    onClick={() => saveMealCorrection(meal.id)}
+                    type="button"
+                  >
+                    Apply
+                  </button>
+                </div>
               </>
             )}
           </div>
@@ -5897,6 +5920,7 @@ export default function Home() {
                     minimumHeight={minimumTodayTimelineHeight}
                     onOpenMeal={openTimelineMeal}
                     timelineAriaLabel="Today's timeline"
+                    updatingMealId={savingMealId}
                   />
                 </div>
               )}
@@ -5942,6 +5966,7 @@ export default function Home() {
                           meals={group.meals}
                           onOpenMeal={openTimelineMeal}
                           timelineAriaLabel={`${group.dayLabel} timeline`}
+                          updatingMealId={savingMealId}
                         />
                       </div>
                     ))}
