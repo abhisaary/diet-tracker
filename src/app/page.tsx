@@ -482,6 +482,15 @@ function getMinutesOfDay(value: string) {
   return date.getHours() * 60 + date.getMinutes();
 }
 
+const trackingDayStartMinutes = 4 * 60;
+const trackingDayEndMinutes = 24 * 60 + trackingDayStartMinutes;
+
+function getTrackingDayMinutes(value: string) {
+  const minutes = getMinutesOfDay(value);
+
+  return minutes < trackingDayStartMinutes ? minutes + 24 * 60 : minutes;
+}
+
 function getAverage(values: number[]) {
   return values.length > 0
     ? values.reduce((total, value) => total + value, 0) / values.length
@@ -527,7 +536,6 @@ function formatDurationMinutes(value: number | null) {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
 }
 
-const calendarDayEndMinutes = 24 * 60;
 const timelineEdgePaddingMinutes = 30;
 const minimumTimelineHeight = 240;
 const minimumTodayTimelineHeight = minimumTimelineHeight / 2;
@@ -536,7 +544,7 @@ const timelinePixelsPerHour = 30;
 const timelineLabelEdge = 22;
 const timelineLabelMaxGap = 50;
 const canonicalTimelineGuideMinutes = Array.from(
-  { length: 8 },
+  { length: 10 },
   (_, index) => index * 3 * 60,
 );
 
@@ -576,7 +584,7 @@ type DailyTimelineLayout = {
 };
 
 function formatTimelineTime(minutes: number) {
-  if (minutes === calendarDayEndMinutes) {
+  if (minutes === 24 * 60) {
     return "Midnight";
   }
 
@@ -617,8 +625,8 @@ function getDailyTimelineLayout(
 
   if (entries.length === 0) {
     return {
-      domainEndMinutes: timelineEdgePaddingMinutes * 2,
-      domainStartMinutes: 0,
+      domainEndMinutes: trackingDayStartMinutes + timelineEdgePaddingMinutes * 2,
+      domainStartMinutes: trackingDayStartMinutes,
       guides: [],
       items: [],
       plotHeight: minimumHeight,
@@ -626,16 +634,16 @@ function getDailyTimelineLayout(
   }
 
   const entryMinutes = entries.map((entry) =>
-    getMinutesOfDay(entry.occurredAt),
+    getTrackingDayMinutes(entry.occurredAt),
   );
   const earliestEntryMinutes = Math.min(...entryMinutes);
   const latestEntryMinutes = Math.max(...entryMinutes);
   const domainStartMinutes = Math.max(
-    0,
+    trackingDayStartMinutes,
     earliestEntryMinutes - timelineEdgePaddingMinutes,
   );
   const domainEndMinutes = Math.min(
-    calendarDayEndMinutes,
+    trackingDayEndMinutes,
     latestEntryMinutes + timelineEdgePaddingMinutes,
   );
 
@@ -659,7 +667,7 @@ function getDailyTimelineLayout(
           ),
         );
   const markerPositions = entries.map((entry) => {
-    const minutes = getMinutesOfDay(entry.occurredAt);
+    const minutes = getTrackingDayMinutes(entry.occurredAt);
 
     return Math.min(
       1,
@@ -957,10 +965,9 @@ function formatPrimaryIngredientAmount(amount: string) {
 }
 
 function formatMealDay(value: string) {
-  const date = new Date(value);
-  const today = new Date();
-  const yesterday = new Date();
-  yesterday.setDate(today.getDate() - 1);
+  const date = getTrackingDayDate(value);
+  const today = getTrackingDayDate(new Date());
+  const yesterday = addLocalDays(today, -1);
 
   if (isSameLocalDay(date, today)) {
     return "Today";
@@ -975,7 +982,7 @@ function formatMealDay(value: string) {
   }).format(date);
 }
 
-function getLocalDayKey(value: string) {
+function getLocalDayKey(value: Date | string) {
   const date = new Date(value);
 
   return [
@@ -983,6 +990,22 @@ function getLocalDayKey(value: string) {
     padDatePart(date.getMonth() + 1),
     padDatePart(date.getDate()),
   ].join("-");
+}
+
+function getTrackingDayDate(value: Date | string) {
+  const date = new Date(value);
+  const minutes = date.getHours() * 60 + date.getMinutes();
+
+  if (minutes < trackingDayStartMinutes) {
+    date.setDate(date.getDate() - 1);
+  }
+
+  date.setHours(12, 0, 0, 0);
+  return date;
+}
+
+function getTrackingDayKey(value: Date | string) {
+  return getLocalDayKey(getTrackingDayDate(value));
 }
 
 function isSameLocalDay(first: Date, second: Date) {
@@ -994,7 +1017,7 @@ function isSameLocalDay(first: Date, second: Date) {
 }
 
 function isMealToday(meal: MealRecord) {
-  return isSameLocalDay(new Date(meal.eatenAt), new Date());
+  return getTrackingDayKey(meal.eatenAt) === getTrackingDayKey(new Date());
 }
 
 function addLocalDays(date: Date, days: number) {
@@ -1045,6 +1068,10 @@ function getLocalDaySerial(date: Date) {
   );
 }
 
+function getTrackingDaySerial(value: Date | string) {
+  return getLocalDaySerial(getTrackingDayDate(value));
+}
+
 function getPlantDiversitySnapshot(
   meals: MealRecord[],
   evaluationDate: Date,
@@ -1056,7 +1083,7 @@ function getPlantDiversitySnapshot(
   >();
 
   for (const meal of meals) {
-    const mealDay = getLocalDaySerial(new Date(meal.eatenAt));
+    const mealDay = getTrackingDaySerial(meal.eatenAt);
 
     if (mealDay > evaluationDay) {
       continue;
@@ -3740,7 +3767,7 @@ export default function Home() {
     );
   const todayBowelMovements = visibleBowelMovements
     .filter((movement) =>
-      isSameLocalDay(new Date(movement.occurredAt), new Date()),
+      getTrackingDayKey(movement.occurredAt) === getTrackingDayKey(new Date()),
     )
     .sort(
       (first, second) =>
@@ -3754,12 +3781,14 @@ export default function Home() {
     todayMeals,
     trackedNutrients,
   );
-  const todayDayKey = getLocalDayKey(new Date().toISOString());
-  const currentDay = new Date();
-  const latestCompleteDay = addLocalDays(currentDay, -1);
-  const thirtyDayStartKey = getLocalDayKey(addLocalDays(currentDay, -29).toISOString());
+  const currentTrackingDay = getTrackingDayDate(new Date());
+  const todayDayKey = getLocalDayKey(currentTrackingDay);
+  const latestCompleteDay = addLocalDays(currentTrackingDay, -1);
+  const thirtyDayStartKey = getLocalDayKey(
+    addLocalDays(currentTrackingDay, -29),
+  );
   const sevenDayKeys = Array.from({ length: 7 }, (_, index) =>
-    getLocalDayKey(addLocalDays(latestCompleteDay, index - 6).toISOString()),
+    getLocalDayKey(addLocalDays(latestCompleteDay, index - 6)),
   );
   const savedNutrientOrder = reconcileNutrientOrder(
     nutrientOrder,
@@ -3803,7 +3832,7 @@ export default function Home() {
   const mealsByDay = meals.reduce<
     { dayKey: string; dayLabel: string; meals: MealRecord[] }[]
   >((groups, meal) => {
-    const dayKey = getLocalDayKey(meal.eatenAt);
+    const dayKey = getTrackingDayKey(meal.eatenAt);
     const existingGroup = groups.find((group) => group.dayKey === dayKey);
 
     if (existingGroup) {
@@ -3829,7 +3858,7 @@ export default function Home() {
   const bowelMovementsByDayKey = visibleBowelMovements.reduce<
     Record<string, BowelMovementRecord[]>
   >((groups, movement) => {
-    const dayKey = getLocalDayKey(movement.occurredAt);
+    const dayKey = getTrackingDayKey(movement.occurredAt);
     groups[dayKey] = [...(groups[dayKey] ?? []), movement];
     return groups;
   }, {});
@@ -3950,7 +3979,7 @@ export default function Home() {
   ];
   const sevenDayMealTimingRows = sevenDayKeys.map((dayKey) => {
     const mealMinutes = (mealsByDayKey[dayKey] ?? [])
-      .map((meal) => getMinutesOfDay(meal.eatenAt))
+      .map((meal) => getTrackingDayMinutes(meal.eatenAt))
       .sort((first, second) => first - second);
 
     return {
@@ -4112,7 +4141,7 @@ export default function Home() {
     const chartEndDate = addLocalDays(currentDate, -1);
     const analyzedMealDays = meals
       .filter((meal) => meal.nutrition.plantVarieties !== undefined)
-      .map((meal) => getLocalDaySerial(new Date(meal.eatenAt)));
+      .map((meal) => getTrackingDaySerial(meal.eatenAt));
     const firstAnalyzedDay =
       analyzedMealDays.length > 0 ? Math.min(...analyzedMealDays) : null;
     const points = Array.from({ length: 56 }, (_, index) => {
@@ -4124,7 +4153,7 @@ export default function Home() {
 
       return {
         date,
-        dayKey: getLocalDayKey(date.toISOString()),
+        dayKey: getLocalDayKey(date),
         snapshot,
         value: hasTrackingData ? snapshot.score : null,
       };
@@ -4330,7 +4359,10 @@ export default function Home() {
     };
     const rowHeight = 11;
     const xForMinutes = (minutes: number) =>
-      bounds.left + (minutes / (24 * 60)) * bounds.width;
+      bounds.left +
+      ((minutes - trackingDayStartMinutes) /
+        (trackingDayEndMinutes - trackingDayStartMinutes)) *
+        bounds.width;
 
     return (
       <svg
@@ -4392,7 +4424,12 @@ export default function Home() {
             </g>
           );
         })}
-        {[0, 12 * 60, 24 * 60].map((minutes) => {
+        {[
+          { label: "4a", minutes: trackingDayStartMinutes },
+          { label: "12p", minutes: 12 * 60 },
+          { label: "12a", minutes: 24 * 60 },
+          { label: "4a", minutes: trackingDayEndMinutes },
+        ].map(({ label, minutes }) => {
           const x = xForMinutes(minutes);
 
           return (
@@ -4409,16 +4446,16 @@ export default function Home() {
                 fill="#94a3b8"
                 fontSize="7"
                 textAnchor={
-                  minutes === 0
+                  minutes === trackingDayStartMinutes
                     ? "start"
-                    : minutes === 24 * 60
+                    : minutes === trackingDayEndMinutes
                       ? "end"
                       : "middle"
                 }
                 x={x}
                 y="98"
               >
-                {minutes === 12 * 60 ? "12p" : "12a"}
+                {label}
               </text>
             </g>
           );
