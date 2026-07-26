@@ -491,6 +491,47 @@ function getTrackingDayMinutes(value: string) {
   return minutes < trackingDayStartMinutes ? minutes + 24 * 60 : minutes;
 }
 
+const eatingOccasionGapMinutes = 60;
+
+type EatingOccasion = {
+  endAt: number;
+  startAt: number;
+};
+
+function getEatingOccasions(meals: MealRecord[]): EatingOccasion[] {
+  const mealsByTime = [...meals].sort(
+    (first, second) =>
+      new Date(first.eatenAt).getTime() - new Date(second.eatenAt).getTime(),
+  );
+
+  if (mealsByTime.length === 0) {
+    return [];
+  }
+
+  const firstMealTime = new Date(mealsByTime[0].eatenAt).getTime();
+  const occasions: EatingOccasion[] = [];
+  let startAt = firstMealTime;
+  let endAt = firstMealTime;
+
+  for (const meal of mealsByTime.slice(1)) {
+    const mealTime = new Date(meal.eatenAt).getTime();
+    const gapMinutes = (mealTime - endAt) / 60_000;
+
+    if (gapMinutes <= eatingOccasionGapMinutes) {
+      endAt = mealTime;
+      continue;
+    }
+
+    occasions.push({ endAt, startAt });
+    startAt = mealTime;
+    endAt = mealTime;
+  }
+
+  occasions.push({ endAt, startAt });
+
+  return occasions;
+}
+
 function getAverage(values: number[]) {
   return values.length > 0
     ? values.reduce((total, value) => total + value, 0) / values.length
@@ -508,6 +549,20 @@ function getCircularMeanMinutes(values: number[]) {
   const angle = Math.atan2(meanSine, meanCosine);
 
   return (((angle < 0 ? angle + Math.PI * 2 : angle) / (Math.PI * 2)) * 24 * 60);
+}
+
+function getCircularMeanTrackingDayMinutes(values: number[]) {
+  if (values.length === 0) {
+    return null;
+  }
+
+  const meanShifted = getCircularMeanMinutes(
+    values.map((value) => value - trackingDayStartMinutes),
+  );
+
+  return meanShifted === null
+    ? null
+    : meanShifted + trackingDayStartMinutes;
 }
 
 function formatClockMinutes(value: number | null) {
@@ -3936,28 +3991,30 @@ export default function Home() {
     };
   });
   const thirtyDayChrononutritionDays = thirtyDayMealsByDay.map((group) => {
-    const mealsByTime = [...group.meals].sort(
-      (first, second) =>
-        new Date(first.eatenAt).getTime() - new Date(second.eatenAt).getTime(),
-    );
-    const mealTimes = mealsByTime.map((meal) =>
-      new Date(meal.eatenAt).getTime(),
-    );
-    const firstMeal = mealsByTime[0];
-    const lastMeal = mealsByTime[mealsByTime.length - 1];
-    const gaps = mealTimes.slice(1).map((time, index) => {
-      const previousTime = mealTimes[index];
+    const occasions = getEatingOccasions(group.meals);
+    const firstOccasion = occasions[0];
+    const lastOccasion = occasions[occasions.length - 1];
+    const gaps = occasions.slice(1).map((occasion, index) => {
+      const previousOccasion = occasions[index];
 
-      return previousTime === undefined ? 0 : (time - previousTime) / 60_000;
+      return previousOccasion === undefined
+        ? 0
+        : (occasion.startAt - previousOccasion.endAt) / 60_000;
     });
 
     return {
-      firstMinutes: firstMeal ? getMinutesOfDay(firstMeal.eatenAt) : null,
+      firstMinutes: firstOccasion
+        ? getTrackingDayMinutes(new Date(firstOccasion.startAt).toISOString())
+        : null,
       gaps: gaps.filter((gap) => gap > 0),
-      lastMinutes: lastMeal ? getMinutesOfDay(lastMeal.eatenAt) : null,
+      lastMinutes: lastOccasion
+        ? getTrackingDayMinutes(new Date(lastOccasion.endAt).toISOString())
+        : null,
       windowMinutes:
-        mealTimes.length > 1
-          ? (mealTimes[mealTimes.length - 1] - mealTimes[0]) / 60_000
+        firstOccasion && lastOccasion && occasions.length > 0
+          ? firstOccasion.startAt === lastOccasion.endAt
+            ? null
+            : (lastOccasion.endAt - firstOccasion.startAt) / 60_000
           : null,
     };
   });
@@ -3977,12 +4034,16 @@ export default function Home() {
     {
       detail: "first meal",
       id: "first-meal",
-      value: formatClockMinutes(getCircularMeanMinutes(firstMealMinutes)),
+      value: formatClockMinutes(
+        getCircularMeanTrackingDayMinutes(firstMealMinutes),
+      ),
     },
     {
       detail: "last meal",
       id: "last-meal",
-      value: formatClockMinutes(getCircularMeanMinutes(lastMealMinutes)),
+      value: formatClockMinutes(
+        getCircularMeanTrackingDayMinutes(lastMealMinutes),
+      ),
     },
     {
       detail: "eating window",
@@ -3996,15 +4057,19 @@ export default function Home() {
     },
   ];
   const sevenDayMealTimingRows = sevenDayKeys.map((dayKey) => {
-    const mealMinutes = (mealsByDayKey[dayKey] ?? [])
-      .map((meal) => getTrackingDayMinutes(meal.eatenAt))
-      .sort((first, second) => first - second);
+    const occasions = getEatingOccasions(mealsByDayKey[dayKey] ?? []);
+    const firstOccasion = occasions[0];
+    const lastOccasion = occasions[occasions.length - 1];
 
     return {
       date: new Date(`${dayKey}T12:00:00`),
       dayKey,
-      firstMinutes: mealMinutes[0] ?? null,
-      lastMinutes: mealMinutes[mealMinutes.length - 1] ?? null,
+      firstMinutes: firstOccasion
+        ? getTrackingDayMinutes(new Date(firstOccasion.startAt).toISOString())
+        : null,
+      lastMinutes: lastOccasion
+        ? getTrackingDayMinutes(new Date(lastOccasion.endAt).toISOString())
+        : null,
     };
   });
   const calorieReference = getCalorieReferenceRange(profile);
