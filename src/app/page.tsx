@@ -6,11 +6,20 @@ import {
   type ReactNode,
   type TouchEvent,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
+import {
+  clearLastUserEmail,
+  clearLocalDataCache,
+  getLastUserEmail,
+  readInitialLocalDataCache,
+  setLastUserEmail,
+  writeLocalDataCache,
+} from "@/lib/local-data-cache";
 import { CURRENT_PLANT_VARIETY_VERSION } from "@/lib/plant-variety-rules";
 import type {
   BowelMovementRecord,
@@ -2040,6 +2049,8 @@ export default function Home() {
   const onboardingTooltipRef = useRef<HTMLElement | null>(null);
   const settingsOnboardingTargetRef = useRef<HTMLButtonElement | null>(null);
   const trackingOnboardingTargetRef = useRef<HTMLFormElement | null>(null);
+  const hydratedEmailRef = useRef<string | null>(null);
+  const cacheHydratedRef = useRef(false);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [activeForm, setActiveForm] = useState<
     "bowel-movement" | "meal" | "symptom" | null
@@ -2048,6 +2059,8 @@ export default function Home() {
   const [analyticsSection, setAnalyticsSection] =
     useState<AnalyticsSection>("nutrition");
   const [authPending, setAuthPending] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
+  const [cachedUserHint, setCachedUserHint] = useState(false);
   const [bowelMovements, setBowelMovements] = useState<BowelMovementRecord[]>(
     [],
   );
@@ -2314,6 +2327,26 @@ export default function Home() {
     }
   }
 
+  useLayoutEffect(() => {
+    if (cacheHydratedRef.current) {
+      return;
+    }
+
+    cacheHydratedRef.current = true;
+    const email = getLastUserEmail();
+    hydratedEmailRef.current = email;
+    setCachedUserHint(Boolean(email));
+
+    const cached = readInitialLocalDataCache();
+    if (!cached) {
+      return;
+    }
+
+    setMeals(cached.meals);
+    setPendingMealSubmissions(cached.submissions);
+    setBowelMovements(cached.bowelMovements);
+  }, []);
+
   useEffect(() => {
     fetch("/api/status")
       .then((response) => response.json())
@@ -2322,39 +2355,29 @@ export default function Home() {
         showMessage({ kind: "error", text: "Could not load app status." });
       });
 
-    supabase.auth.getSession().then(({ data }) => {
-      const token = data.session?.access_token ?? null;
-      const email = data.session?.user.email ?? null;
-      setAccessToken(token);
-      setUserEmail(email);
-      const nextProfile = applyUserSettings(
-        data.session?.user.user_metadata,
-      );
-      if (token && email) {
-        showFirstUnseenOnboarding(email);
-        loadMeals(token);
-        if (
-          nextProfile.bowelMovementTrackingEnabled &&
-          nextProfile.showBowelMovementsOnTimeline
-        ) {
-          loadBowelMovements(token);
-        }
-      } else {
-        setActiveOnboardingId(null);
-      }
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    function applySession(session: {
+      access_token?: string;
+      user?: { email?: string | null; user_metadata?: Record<string, unknown> };
+    } | null) {
       const token = session?.access_token ?? null;
-      const email = session?.user.email ?? null;
+      const email = session?.user?.email?.trim().toLowerCase() ?? null;
       setAccessToken(token);
       setUserEmail(email);
-      const nextProfile = applyUserSettings(session?.user.user_metadata);
+      const nextProfile = applyUserSettings(session?.user?.user_metadata);
+
       if (token && email) {
+        if (hydratedEmailRef.current && hydratedEmailRef.current !== email) {
+          clearLocalDataCache(hydratedEmailRef.current);
+          setMeals([]);
+          setPendingMealSubmissions([]);
+          setBowelMovements([]);
+        }
+
+        hydratedEmailRef.current = email;
+        setLastUserEmail(email);
+        setCachedUserHint(true);
         showFirstUnseenOnboarding(email);
-        loadMeals(token);
+        loadMeals(token, false);
         if (
           nextProfile.bowelMovementTrackingEnabled &&
           nextProfile.showBowelMovementsOnTimeline
@@ -2365,6 +2388,11 @@ export default function Home() {
           setBowelMovements([]);
         }
       } else {
+        const previousEmail = hydratedEmailRef.current ?? getLastUserEmail();
+        clearLocalDataCache(previousEmail);
+        clearLastUserEmail();
+        hydratedEmailRef.current = null;
+        setCachedUserHint(false);
         setActiveOnboardingId(null);
         bowelMovementLoadSequenceRef.current += 1;
         setBowelMovements([]);
@@ -2389,12 +2417,42 @@ export default function Home() {
         setSettingsOpen(false);
         setTrackedNutrients([]);
       }
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      applySession(data.session);
+      setAuthReady(true);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      applySession(session);
+      setAuthReady(true);
     });
 
     return () => subscription.unsubscribe();
     // Auth bootstrap should only follow this Supabase client instance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]);
+
+  useEffect(() => {
+    if (!userEmail || !accessToken) {
+      return;
+    }
+
+    writeLocalDataCache(userEmail, {
+      bowelMovements,
+      meals,
+      submissions: pendingMealSubmissions,
+    });
+  }, [
+    accessToken,
+    bowelMovements,
+    meals,
+    pendingMealSubmissions,
+    userEmail,
+  ]);
 
   useEffect(() => {
     const displayModeQuery = window.matchMedia("(display-mode: standalone)");
@@ -3373,7 +3431,6 @@ export default function Home() {
     ]);
 
     if (
-      shouldBackfillPlants &&
       nextMeals.some(
         (meal) =>
           meal.nutrition.plantVarietyVersion !==
@@ -5788,7 +5845,7 @@ export default function Home() {
           messageVisible,
         )}
 
-        {!accessToken ? (
+        {authReady && !accessToken ? (
           <form
             className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm"
             onSubmit={submitLogin}
@@ -5831,6 +5888,10 @@ export default function Home() {
               Create account
             </button>
           </form>
+        ) : !accessToken && !cachedUserHint ? (
+          <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500 shadow-sm">
+            Restoring session…
+          </div>
         ) : (
           <>
             <div
