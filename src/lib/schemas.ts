@@ -222,6 +222,7 @@ export const bowelMovementInputSchema = z.object({
   note: z.string().trim().max(2000).optional(),
   occurredAt: z.string().datetime().optional(),
   photo: mealPhotoSchema.optional(),
+  timezone: z.string().trim().min(1).optional(),
 });
 
 export const timelineItemSchema = z.discriminatedUnion("type", [

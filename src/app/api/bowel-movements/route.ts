@@ -2,6 +2,7 @@ import { after, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { summarizeBowelMovementImage } from "@/lib/openai-bowel-summary";
+import { inferBowelMovementOccurredAt } from "@/lib/openai-bowel-time";
 import { bowelMovementInputSchema } from "@/lib/schemas";
 import {
   completeBowelMovementSummary,
@@ -84,7 +85,28 @@ export async function POST(request: Request) {
     return NextResponse.json({ bowelMovement: existing });
   }
 
-  const occurredAt = input.data.occurredAt ?? new Date().toISOString();
+  const submittedAt = new Date().toISOString();
+  let occurredAt = input.data.occurredAt ?? submittedAt;
+
+  if (!input.data.occurredAt && input.data.note?.trim()) {
+    try {
+      const inferredOccurredAt = await inferBowelMovementOccurredAt({
+        note: input.data.note,
+        submittedAt,
+        timezone: input.data.timezone,
+      });
+
+      if (inferredOccurredAt) {
+        occurredAt = inferredOccurredAt;
+      }
+    } catch (error) {
+      console.error("[bowel-occurred-at]", {
+        error,
+        id: input.data.id,
+      });
+    }
+  }
+
   let bowelMovement;
 
   try {

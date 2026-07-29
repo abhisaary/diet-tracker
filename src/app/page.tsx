@@ -619,6 +619,12 @@ type DailyTimelineEntry =
       kind: "meal";
       meal: MealRecord;
       occurredAt: string;
+    }
+  | {
+      id: string;
+      kind: "pending-meal";
+      occurredAt: string;
+      submission: MealSubmission;
     };
 
 type DailyTimelineItem = {
@@ -655,9 +661,26 @@ function formatTimelineTime(minutes: number) {
   }).format(date);
 }
 
+function getPendingMealOccurredAt(submission: MealSubmission) {
+  return submission.eatenAt ?? submission.submittedAt;
+}
+
+function getPendingMealTitle(submission: MealSubmission) {
+  const description = submission.description.trim();
+
+  if (!description) {
+    return "Meal";
+  }
+
+  return description.length > 42
+    ? `${description.slice(0, 41).trimEnd()}…`
+    : description;
+}
+
 function getDailyTimelineLayout(
   meals: MealRecord[],
   bowelMovements: BowelMovementRecord[],
+  pendingMeals: MealSubmission[] = [],
   minimumHeight = minimumTimelineHeight,
 ): DailyTimelineLayout {
   const entries: DailyTimelineEntry[] = [
@@ -666,6 +689,12 @@ function getDailyTimelineLayout(
       kind: "meal" as const,
       meal,
       occurredAt: meal.eatenAt,
+    })),
+    ...pendingMeals.map((submission) => ({
+      id: submission.id,
+      kind: "pending-meal" as const,
+      occurredAt: getPendingMealOccurredAt(submission),
+      submission,
     })),
     ...bowelMovements.map((movement) => ({
       id: movement.id,
@@ -821,6 +850,8 @@ function DailyTimeline({
   meals,
   minimumHeight,
   onOpenMeal,
+  onOpenPendingMeal,
+  pendingMeals = [],
   timelineAriaLabel,
   updatingMealId = null,
 }: {
@@ -829,12 +860,15 @@ function DailyTimeline({
   meals: MealRecord[];
   minimumHeight?: number;
   onOpenMeal: (meal: MealRecord) => void;
+  onOpenPendingMeal?: (submission: MealSubmission) => void;
+  pendingMeals?: MealSubmission[];
   timelineAriaLabel: string;
   updatingMealId?: string | null;
 }) {
   const layout = getDailyTimelineLayout(
     meals,
     bowelMovements,
+    pendingMeals,
     minimumHeight,
   );
 
@@ -924,6 +958,78 @@ function DailyTimeline({
                       </span>
                     </span>
                   </div>
+                </li>
+              );
+            }
+
+            if (item.entry.kind === "pending-meal") {
+              const submission = item.entry.submission;
+              const pendingTitle = getPendingMealTitle(submission);
+              const isFailed = submission.status === "failed";
+
+              return (
+                <li
+                  className="pointer-events-none absolute inset-0"
+                  key={`pending-meal-${item.entry.id}`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`absolute z-10 h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow-[0_0_0_1px_#cbd5e1] ${
+                      isFailed ? "bg-red-400" : "bg-slate-400"
+                    }`}
+                    style={{
+                      left: `calc(2.5rem + ${item.markerOffset}px)`,
+                      top: `${item.markerPosition * 100}%`,
+                    }}
+                  />
+                  <button
+                    aria-haspopup="dialog"
+                    aria-label={`${
+                      isFailed ? "Failed meal" : "Estimating meal"
+                    } ${pendingTitle} at ${itemTime}`}
+                    className={`pointer-events-auto absolute left-16 right-0 z-20 -translate-y-1/2 overflow-hidden rounded-xl border px-2 text-left shadow-sm outline-none focus-visible:ring-4 focus-visible:ring-emerald-100 ${
+                      isFailed
+                        ? "border-red-200 bg-red-50"
+                        : "border-slate-200 bg-slate-50"
+                    }`}
+                    onClick={() => onOpenPendingMeal?.(submission)}
+                    style={{
+                      height: `${item.labelHeight}px`,
+                      paddingRight: "1.75rem",
+                      top: `${(item.labelCenter / layout.plotHeight) * 100}%`,
+                    }}
+                    type="button"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2"
+                    >
+                      {isFailed ? (
+                        <span className="text-xs font-bold text-red-500">!</span>
+                      ) : (
+                        <span className="block h-3 w-3 animate-spin rounded-full border-2 border-emerald-200 border-t-emerald-600 motion-reduce:animate-none" />
+                      )}
+                    </span>
+                    {item.dense ? (
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-900">
+                          {pendingTitle}
+                        </span>
+                        <span className="shrink-0 text-[10px] font-medium text-slate-500">
+                          {itemTime}
+                        </span>
+                      </span>
+                    ) : (
+                      <>
+                        <span className="block truncate text-xs font-semibold leading-4 text-slate-900">
+                          {pendingTitle}
+                        </span>
+                        <span className="block text-[10px] font-medium leading-3 text-slate-500">
+                          {itemTime}
+                        </span>
+                      </>
+                    )}
+                  </button>
                 </li>
               );
             }
@@ -1990,6 +2096,9 @@ export default function Home() {
   const [timelineMealModalId, setTimelineMealModalId] = useState<string | null>(
     null,
   );
+  const [timelinePendingModalId, setTimelinePendingModalId] = useState<
+    string | null
+  >(null);
   const [accountSection, setAccountSection] =
     useState<AccountSection>("profile");
   const [notificationSettings, setNotificationSettings] =
@@ -2445,7 +2554,8 @@ export default function Home() {
       !accountMenuOpen &&
       !activeOnboardingId &&
       !installHelpOpen &&
-      !timelineMealModalId
+      !timelineMealModalId &&
+      !timelinePendingModalId
     ) {
       return;
     }
@@ -2478,6 +2588,7 @@ export default function Home() {
     installHelpOpen,
     settingsOpen,
     timelineMealModalId,
+    timelinePendingModalId,
   ]);
 
   const missingConfig = status
@@ -3392,7 +3503,6 @@ export default function Home() {
         current === mealId ? null : current,
       );
       await loadMeals();
-      showMessage({ kind: "success", text: "Meal deleted." });
     } catch (error) {
       showMessage({
         kind: "error",
@@ -3547,6 +3657,8 @@ export default function Home() {
       form.reset();
       clearMealPhotos();
       setActiveForm(null);
+      // Let another meal be submitted while this one keeps processing.
+      setMealPending(false);
       const {
         data: { session },
       } = await (async () => {
@@ -3764,8 +3876,8 @@ export default function Home() {
       const requestBody = JSON.stringify({
         id,
         note: note || undefined,
-        occurredAt: new Date().toISOString(),
         photo: uploadedPhoto ?? undefined,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
       const sendRequest = () =>
         authenticatedFetch("/api/bowel-movements", {
@@ -3847,8 +3959,27 @@ export default function Home() {
         new Date(first.occurredAt).getTime() -
         new Date(second.occurredAt).getTime(),
     );
+  const todayPendingMeals = pendingMealSubmissions
+    .filter(
+      (submission) =>
+        getTrackingDayKey(getPendingMealOccurredAt(submission)) ===
+        getTrackingDayKey(new Date()),
+    )
+    .sort(
+      (first, second) =>
+        new Date(getPendingMealOccurredAt(first)).getTime() -
+        new Date(getPendingMealOccurredAt(second)).getTime(),
+    );
   const timelineModalMeal =
-    meals.find((meal) => meal.id === timelineMealModalId) ?? null;
+    meals.find((meal) => meal.id === timelineMealModalId) ??
+    (timelinePendingModalId
+      ? (meals.find((meal) => meal.id === timelinePendingModalId) ?? null)
+      : null);
+  const timelineModalPendingMeal = timelineModalMeal
+    ? null
+    : (pendingMealSubmissions.find(
+        (submission) => submission.id === timelinePendingModalId,
+      ) ?? null);
   const todayMacros = getMealMacroTotals(todayMeals);
   const todayCustomNutrients = getCustomNutrientItems(
     todayMeals,
@@ -3935,11 +4066,21 @@ export default function Home() {
     groups[dayKey] = [...(groups[dayKey] ?? []), movement];
     return groups;
   }, {});
+  const pendingMealsByDayKey = pendingMealSubmissions.reduce<
+    Record<string, MealSubmission[]>
+  >((groups, submission) => {
+    const dayKey = getTrackingDayKey(getPendingMealOccurredAt(submission));
+    groups[dayKey] = [...(groups[dayKey] ?? []), submission];
+    return groups;
+  }, {});
   const historyDayKeys = new Set([
     ...mealsByDay
       .map((group) => group.dayKey)
       .filter((dayKey) => dayKey !== todayDayKey),
     ...Object.keys(bowelMovementsByDayKey).filter(
+      (dayKey) => dayKey !== todayDayKey,
+    ),
+    ...Object.keys(pendingMealsByDayKey).filter(
       (dayKey) => dayKey !== todayDayKey,
     ),
   ]);
@@ -3948,16 +4089,19 @@ export default function Home() {
     .map((dayKey) => {
       const dayMeals = mealsByDayKey[dayKey] ?? [];
       const dayBowelMovements = bowelMovementsByDayKey[dayKey] ?? [];
+      const dayPendingMeals = pendingMealsByDayKey[dayKey] ?? [];
       const representativeTimestamp =
         dayMeals[0]?.eatenAt ??
-        dayBowelMovements[0]?.occurredAt ??
-        `${dayKey}T12:00:00`;
+        (dayPendingMeals[0]
+          ? getPendingMealOccurredAt(dayPendingMeals[0])
+          : dayBowelMovements[0]?.occurredAt ?? `${dayKey}T12:00:00`);
 
       return {
         bowelMovements: dayBowelMovements,
         dayKey,
         dayLabel: formatMealDay(representativeTimestamp),
         meals: dayMeals,
+        pendingMeals: dayPendingMeals,
       };
     });
   const thirtyDayMealsByDay = mealsByDay.filter(
@@ -4683,45 +4827,6 @@ export default function Home() {
     );
   }
 
-  function renderPendingMealCard(meal: MealSubmission) {
-    const isError = meal.status === "failed";
-
-    return (
-      <article
-        className={`rounded-2xl border p-3 ${
-          isError
-            ? "border-red-100 bg-red-50"
-            : "border-slate-200 bg-slate-50"
-        }`}
-        key={meal.id}
-      >
-        <div className="flex items-start gap-3">
-          <div className="min-w-0 flex-1">
-            <h3 className="truncate text-base font-semibold text-slate-950">
-              {meal.description}
-            </h3>
-            <p className="mt-1 text-xs font-medium text-slate-500">
-              {formatMealTimeOfDay(meal.createdAt)}
-            </p>
-            {renderProcessingPill(
-              isError ? "Could not estimate meal" : "Estimating nutrition...",
-              isError,
-            )}
-          </div>
-          {isError ? (
-            <button
-              className="rounded-full px-2 py-1 text-xs font-semibold text-red-600"
-              onClick={() => void dismissMealSubmission(meal.id)}
-              type="button"
-            >
-              Dismiss
-            </button>
-          ) : null}
-        </div>
-      </article>
-    );
-  }
-
   function renderProcessingPill(label: string, isError = false) {
     return (
       <div
@@ -4738,9 +4843,10 @@ export default function Home() {
   }
 
   function closeTimelineMealModal() {
-    const mealId = timelineMealModalId;
+    const mealId = timelineMealModalId ?? timelinePendingModalId;
 
     setTimelineMealModalId(null);
+    setTimelinePendingModalId(null);
     setExpandedMealId((current) => (current === mealId ? null : current));
 
     // Keep edit mode while a correction is still saving so reopening shows
@@ -4751,12 +4857,22 @@ export default function Home() {
   }
 
   function openTimelineMeal(meal: MealRecord) {
+    setTimelinePendingModalId(null);
     setExpandedMealId(meal.id);
     setTimelineMealModalId(meal.id);
 
     if (savingMealId === meal.id) {
       setEditingMealId(meal.id);
     }
+  }
+
+  function openTimelinePendingMeal(submission: MealSubmission) {
+    setTimelineMealModalId(null);
+    setTimelinePendingModalId(submission.id);
+  }
+
+  function closeTimelinePendingModal() {
+    setTimelinePendingModalId(null);
   }
 
   function renderMealCard(
@@ -5878,7 +5994,7 @@ export default function Home() {
                 <textarea
                   className="min-h-32 w-full rounded-2xl border border-slate-200 bg-slate-50 p-3 text-base outline-none focus:ring-4 focus:ring-[#eadff0]"
                   name="note"
-                  placeholder="Anything you want to note? Optional."
+                  placeholder='Optional note. You can include a time like "30 min ago".'
                 />
                 {!bowelPhoto ? (
                   <label className="mt-3 flex w-full cursor-pointer items-center justify-center rounded-full border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
@@ -5938,30 +6054,9 @@ export default function Home() {
                 })}
               </div>
 
-              {pendingMealSubmissions.length > 0 ? (
-                <section
-                  aria-labelledby="pending-meals-title"
-                  className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-3"
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <h3
-                      className="text-xs font-semibold uppercase tracking-wide text-slate-600"
-                      id="pending-meals-title"
-                    >
-                      Pending
-                    </h3>
-                    <span className="text-xs text-slate-400">
-                      Not on timeline yet
-                    </span>
-                  </div>
-                  <div className="mt-2 flex flex-col gap-2">
-                    {pendingMealSubmissions.map(renderPendingMealCard)}
-                  </div>
-                </section>
-              ) : null}
-
               {todayMeals.length === 0 &&
-              todayBowelMovements.length === 0 ? (
+              todayBowelMovements.length === 0 &&
+              todayPendingMeals.length === 0 ? (
                 <div className="mt-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-7 text-center">
                   <div
                     aria-hidden="true"
@@ -5984,6 +6079,8 @@ export default function Home() {
                     meals={todayMeals}
                     minimumHeight={minimumTodayTimelineHeight}
                     onOpenMeal={openTimelineMeal}
+                    onOpenPendingMeal={openTimelinePendingMeal}
+                    pendingMeals={todayPendingMeals}
                     timelineAriaLabel="Today's timeline"
                     updatingMealId={savingMealId}
                   />
@@ -6030,6 +6127,8 @@ export default function Home() {
                           itemsAriaLabel={`${group.dayLabel}'s meals and bowel movements in chronological order`}
                           meals={group.meals}
                           onOpenMeal={openTimelineMeal}
+                          onOpenPendingMeal={openTimelinePendingMeal}
+                          pendingMeals={group.pendingMeals}
                           timelineAriaLabel={`${group.dayLabel} timeline`}
                           updatingMealId={savingMealId}
                         />
@@ -6179,6 +6278,50 @@ export default function Home() {
             forceExpanded: true,
             hideHeading: true,
           })}
+        </ToolbarModal>
+      ) : null}
+      {accessToken && timelineModalPendingMeal ? (
+        <ToolbarModal
+          onClose={closeTimelinePendingModal}
+          title={getPendingMealTitle(timelineModalPendingMeal)}
+          widthClassName="max-w-md"
+        >
+          <p className="text-xs font-medium text-slate-500">
+            {formatMealTimeOfDay(
+              getPendingMealOccurredAt(timelineModalPendingMeal),
+            )}
+          </p>
+          <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <p className="text-sm font-semibold text-slate-950">
+              {timelineModalPendingMeal.status === "failed"
+                ? "Could not estimate meal"
+                : "Estimating meal"}
+            </p>
+            <p className="mt-1 text-sm leading-5 text-slate-600">
+              {timelineModalPendingMeal.status === "failed"
+                ? timelineModalPendingMeal.errorMessage ??
+                  "Something went wrong while estimating this meal."
+                : "Applying your note and photos, then calculating ingredients and macros."}
+            </p>
+            {renderProcessingPill(
+              timelineModalPendingMeal.status === "failed"
+                ? "Estimation failed"
+                : "Estimating nutrition...",
+              timelineModalPendingMeal.status === "failed",
+            )}
+          </div>
+          {timelineModalPendingMeal.status === "failed" ? (
+            <button
+              className="mt-4 w-full rounded-full border border-red-200 px-5 py-3 text-sm font-semibold text-red-600"
+              onClick={() => {
+                void dismissMealSubmission(timelineModalPendingMeal.id);
+                closeTimelinePendingModal();
+              }}
+              type="button"
+            >
+              Dismiss
+            </button>
+          ) : null}
         </ToolbarModal>
       ) : null}
       {accessToken && settingsOpen ? (
