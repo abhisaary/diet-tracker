@@ -14,11 +14,13 @@ import {
   getMealIfExists,
   listActiveMealSubmissions,
   listMeals,
+  recordMealLatency,
   removeMealPhotos,
   replaceMealNutrition,
   updateMealSubmissionStatus,
   uploadMealPhotos,
 } from "@/lib/supabase-server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -34,8 +36,20 @@ function createMealLatencyTracker(operation: "create" | "edit") {
   const requestId = crypto.randomUUID();
   const requestStartedAt = performance.now();
   const stages: Record<string, number> = {};
+  let persistContext: {
+    mealId?: string | null;
+    supabase: SupabaseClient;
+    userId: string;
+  } | null = null;
 
   return {
+    bind(supabase: SupabaseClient, userId: string, mealId?: string | null) {
+      persistContext = {
+        mealId: mealId ?? persistContext?.mealId ?? null,
+        supabase,
+        userId,
+      };
+    },
     getHeaders() {
       const totalMs = roundMilliseconds(performance.now() - requestStartedAt);
       const serverTiming = [
@@ -50,10 +64,16 @@ function createMealLatencyTracker(operation: "create" | "edit") {
         "X-Meal-Request-Id": requestId,
       };
     },
-    log(
+    async log(
       outcome: "error" | "success",
-      metadata: Record<string, number | string> = {},
+      metadata: Record<string, number | string | boolean> = {},
     ) {
+      const totalMs = roundMilliseconds(performance.now() - requestStartedAt);
+      const mealId =
+        (typeof metadata.mealId === "string" ? metadata.mealId : null) ??
+        persistContext?.mealId ??
+        null;
+
       console.info(
         "[meal-latency]",
         JSON.stringify({
@@ -63,9 +83,29 @@ function createMealLatencyTracker(operation: "create" | "edit") {
           requestId,
           source: "server",
           stages,
-          totalMs: roundMilliseconds(performance.now() - requestStartedAt),
+          totalMs,
         }),
       );
+
+      if (!persistContext) {
+        return;
+      }
+
+      try {
+        await recordMealLatency({
+          mealId,
+          metadata,
+          operation,
+          outcome,
+          requestId,
+          stages,
+          supabase: persistContext.supabase,
+          totalMs,
+          userId: persistContext.userId,
+        });
+      } catch (error) {
+        console.error("[meal-latency-persist]", error);
+      }
     },
     async measure<T>(name: string, action: () => Promise<T>) {
       const startedAt = performance.now();
@@ -77,6 +117,11 @@ function createMealLatencyTracker(operation: "create" | "edit") {
       }
     },
     requestId,
+    setMealId(mealId: string) {
+      if (persistContext) {
+        persistContext.mealId = mealId;
+      }
+    },
   };
 }
 
@@ -280,9 +325,11 @@ export async function POST(request: Request) {
   );
 
   if (!auth) {
-    latency.log("error", { status: 401 });
+    await latency.log("error", { status: 401 });
     return jsonError("Sign in before logging a meal.", 401);
   }
+
+  latency.bind(auth.supabase, auth.user.id);
 
   if (request.headers.get("content-type")?.includes("application/json")) {
     const requestBody = await latency.measure("request-parse", () =>
@@ -291,7 +338,7 @@ export async function POST(request: Request) {
     const input = uploadedMealInputSchema.safeParse(requestBody);
 
     if (!input.success) {
-      latency.log("error", { status: 400 });
+      await latency.log("error", { status: 400 });
       return jsonError(input.error.issues[0]?.message ?? "Invalid meal input.");
     }
 
@@ -299,7 +346,7 @@ export async function POST(request: Request) {
     const uploadedPhotos = input.data.photos;
 
     if (!description && !uploadedPhotos.length) {
-      latency.log("error", { status: 400 });
+      await latency.log("error", { status: 400 });
       return jsonError("Add a meal note or image before saving.");
     }
 
@@ -308,18 +355,19 @@ export async function POST(request: Request) {
         (photo) => !photo.fileId.startsWith(`${auth.user.id}/`),
       )
     ) {
-      latency.log("error", { status: 403 });
+      await latency.log("error", { status: 403 });
       return jsonError("A meal photo does not belong to this user.", 403);
     }
 
     const id = input.data.clientMealId ?? crypto.randomUUID();
+    latency.setMealId(id);
     const submittedAt = new Date().toISOString();
     const existingMeal = await latency.measure("idempotency-meal", () =>
       getMealIfExists(auth.supabase, auth.user.id, id),
     );
 
     if (existingMeal) {
-      latency.log("success", {
+      await latency.log("success", {
         idempotent: "meal",
         photoCount: uploadedPhotos.length,
         status: 200,
@@ -348,7 +396,7 @@ export async function POST(request: Request) {
       const { submission } = submissionResult;
 
       if (submission.status === "processing") {
-        latency.log("success", {
+        await latency.log("success", {
           idempotent: "processing",
           photoCount: uploadedPhotos.length,
           status: 202,
@@ -360,7 +408,7 @@ export async function POST(request: Request) {
       }
 
       if (submission.status === "failed") {
-        latency.log("error", {
+        await latency.log("error", {
           idempotent: "failed",
           photoCount: uploadedPhotos.length,
           status: 500,
@@ -379,7 +427,7 @@ export async function POST(request: Request) {
       );
 
       if (completedMeal) {
-        latency.log("success", {
+        await latency.log("success", {
           idempotent: "ready",
           photoCount: uploadedPhotos.length,
           status: 200,
@@ -390,7 +438,7 @@ export async function POST(request: Request) {
         );
       }
 
-      latency.log("error", {
+      await latency.log("error", {
         idempotent: "ready-missing",
         photoCount: uploadedPhotos.length,
         status: 409,
@@ -456,14 +504,14 @@ export async function POST(request: Request) {
           }),
         )
         .catch(() => submissionResult.submission);
-      latency.log("error", { photoCount: uploadedPhotos.length, status: 500 });
+      await latency.log("error", { photoCount: uploadedPhotos.length, status: 500 });
       return NextResponse.json(
         { error: errorMessage, submission },
         { headers: latency.getHeaders(), status: 500 },
       );
     }
 
-    latency.log("success", { photoCount: uploadedPhotos.length, status: 201 });
+    await latency.log("success", { photoCount: uploadedPhotos.length, status: 201 });
     return NextResponse.json(
       { meal },
       { headers: latency.getHeaders(), status: 201 },
@@ -478,12 +526,12 @@ export async function POST(request: Request) {
   );
 
   if (photos.length > maxMealPhotos) {
-    latency.log("error", { status: 400 });
+    await latency.log("error", { status: 400 });
     return jsonError(`Add no more than ${maxMealPhotos} images per meal.`);
   }
 
   if (photos.some((photo) => photo.type && !photo.type.startsWith("image/"))) {
-    latency.log("error", { status: 400 });
+    await latency.log("error", { status: 400 });
     return jsonError("Meal uploads must be image files.");
   }
 
@@ -494,18 +542,19 @@ export async function POST(request: Request) {
   });
 
   if (!input.success) {
-    latency.log("error", { status: 400 });
+    await latency.log("error", { status: 400 });
     return jsonError(input.error.issues[0]?.message ?? "Invalid meal input.");
   }
 
   const description = input.data.description ?? "";
 
   if (!description && !photos.length) {
-    latency.log("error", { status: 400 });
+    await latency.log("error", { status: 400 });
     return jsonError("Add a meal note or image before saving.");
   }
 
   const id = crypto.randomUUID();
+  latency.setMealId(id);
   const submittedAt = new Date().toISOString();
   const timezone =
     typeof formData.get("timezone") === "string"
@@ -615,14 +664,14 @@ export async function POST(request: Request) {
         }),
       )
       .catch(() => submissionResult.submission);
-    latency.log("error", { photoCount: uploadedPhotos.length, status: 500 });
+    await latency.log("error", { photoCount: uploadedPhotos.length, status: 500 });
     return NextResponse.json(
       { error: errorMessage, submission },
       { headers: latency.getHeaders(), status: 500 },
     );
   }
 
-  latency.log("success", { photoCount: uploadedPhotos.length, status: 201 });
+  await latency.log("success", { photoCount: uploadedPhotos.length, status: 201 });
   return NextResponse.json(
     { meal },
     { headers: latency.getHeaders(), status: 201 },
@@ -636,9 +685,11 @@ export async function PATCH(request: Request) {
   );
 
   if (!auth) {
-    latency.log("error", { status: 401 });
+    await latency.log("error", { status: 401 });
     return jsonError("Sign in before editing a meal.", 401);
   }
+
+  latency.bind(auth.supabase, auth.user.id);
 
   const requestBody = await latency.measure("request-parse", () =>
     request.json(),
@@ -646,9 +697,11 @@ export async function PATCH(request: Request) {
   const input = mealUpdateSchema.safeParse(requestBody);
 
   if (!input.success) {
-    latency.log("error", { status: 400 });
+    await latency.log("error", { status: 400 });
     return jsonError(input.error.issues[0]?.message ?? "Invalid meal update.");
   }
+
+  latency.setMealId(input.data.id);
 
   try {
     const existingMeal = await latency.measure("db-read", () =>
@@ -686,7 +739,7 @@ export async function PATCH(request: Request) {
       }),
     );
 
-    latency.log("success", {
+    await latency.log("success", {
       photoCount: existingMeal.photos.length,
       status: 200,
     });
@@ -695,7 +748,7 @@ export async function PATCH(request: Request) {
       { headers: latency.getHeaders() },
     );
   } catch (error) {
-    latency.log("error", { status: 500 });
+    await latency.log("error", { status: 500 });
     throw error;
   }
 }

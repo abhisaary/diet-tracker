@@ -1037,6 +1037,150 @@ export async function updateMealPlantVarieties({
   return toMealRecord(data as MealRow);
 }
 
+export async function recordMealLatency({
+  mealId,
+  metadata = {},
+  operation,
+  outcome,
+  requestId,
+  stages,
+  supabase,
+  totalMs,
+  userId,
+}: {
+  mealId?: string | null;
+  metadata?: Record<string, number | string | boolean | null>;
+  operation: "create" | "edit";
+  outcome: "error" | "success";
+  requestId: string;
+  stages: Record<string, number>;
+  supabase: SupabaseClient;
+  totalMs: number;
+  userId: string;
+}) {
+  const { data: existing, error: readError } = await supabase
+    .from("meal_latency")
+    .select("id, meal_id, metadata")
+    .eq("request_id", requestId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (readError) {
+    throw new Error(readError.message);
+  }
+
+  if (existing) {
+    const { error } = await supabase
+      .from("meal_latency")
+      .update({
+        meal_id: mealId ?? existing.meal_id ?? null,
+        metadata: {
+          ...((existing.metadata as Record<string, unknown> | null) ?? {}),
+          ...metadata,
+        },
+        operation,
+        outcome,
+        stages,
+        total_ms: totalMs,
+      })
+      .eq("id", existing.id)
+      .eq("user_id", userId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return;
+  }
+
+  const { error } = await supabase.from("meal_latency").insert({
+    meal_id: mealId ?? null,
+    metadata,
+    operation,
+    outcome,
+    request_id: requestId,
+    stages,
+    total_ms: totalMs,
+    user_id: userId,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
+export async function attachClientMealLatency({
+  clientStages,
+  clientTotalMs,
+  mealId,
+  metadata = {},
+  operation,
+  outcome,
+  requestId,
+  supabase,
+  userId,
+}: {
+  clientStages: Record<string, number | number[]>;
+  clientTotalMs: number;
+  mealId?: string | null;
+  metadata?: Record<string, number | number[] | string | boolean | null>;
+  operation: "create" | "edit";
+  outcome: "error" | "success";
+  requestId: string;
+  supabase: SupabaseClient;
+  userId: string;
+}) {
+  const { data: existing, error: readError } = await supabase
+    .from("meal_latency")
+    .select("id, meal_id, metadata")
+    .eq("request_id", requestId)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (readError) {
+    throw new Error(readError.message);
+  }
+
+  if (existing) {
+    const { error } = await supabase
+      .from("meal_latency")
+      .update({
+        client_stages: clientStages,
+        client_total_ms: clientTotalMs,
+        meal_id: mealId ?? existing.meal_id ?? null,
+        metadata: {
+          ...((existing.metadata as Record<string, unknown> | null) ?? {}),
+          ...metadata,
+        },
+      })
+      .eq("id", existing.id)
+      .eq("user_id", userId);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    return;
+  }
+
+  const { error } = await supabase.from("meal_latency").insert({
+    client_stages: clientStages,
+    client_total_ms: clientTotalMs,
+    meal_id: mealId ?? null,
+    metadata,
+    operation,
+    outcome,
+    request_id: requestId,
+    stages: {},
+    total_ms: clientTotalMs,
+    user_id: userId,
+  });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+}
+
 export async function deleteMeal({
   id,
   supabase,

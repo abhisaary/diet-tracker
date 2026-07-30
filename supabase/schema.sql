@@ -102,6 +102,24 @@ create table if not exists public.reminder_deliveries (
   unique (user_id, scheduled_for)
 );
 
+create table if not exists public.meal_latency (
+  id uuid primary key default gen_random_uuid(),
+  request_id uuid not null,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  meal_id uuid,
+  operation text not null
+    check (operation in ('create', 'edit')),
+  outcome text not null
+    check (outcome in ('success', 'error')),
+  total_ms double precision not null,
+  stages jsonb not null default '{}'::jsonb,
+  metadata jsonb not null default '{}'::jsonb,
+  client_total_ms double precision,
+  client_stages jsonb,
+  created_at timestamptz not null default now(),
+  unique (request_id)
+);
+
 create index if not exists meals_user_eaten_at_idx
   on public.meals (user_id, eaten_at desc);
 
@@ -123,6 +141,13 @@ create index if not exists push_subscriptions_user_id_idx
 
 create index if not exists reminder_deliveries_scheduled_for_idx
   on public.reminder_deliveries (scheduled_for desc);
+
+create index if not exists meal_latency_user_created_at_idx
+  on public.meal_latency (user_id, created_at desc);
+
+create index if not exists meal_latency_meal_id_idx
+  on public.meal_latency (meal_id)
+  where meal_id is not null;
 
 create or replace function public.complete_meal_submission(
   p_id uuid,
@@ -217,6 +242,7 @@ alter table public.bowel_movements enable row level security;
 alter table public.notification_settings enable row level security;
 alter table public.push_subscriptions enable row level security;
 alter table public.reminder_deliveries enable row level security;
+alter table public.meal_latency enable row level security;
 
 drop policy if exists "Users can read own meals" on public.meals;
 create policy "Users can read own meals"
@@ -348,6 +374,25 @@ drop policy if exists "Users can delete own push subscriptions"
 create policy "Users can delete own push subscriptions"
   on public.push_subscriptions for delete
   using (auth.uid() = user_id);
+
+drop policy if exists "Users can read own meal latency"
+  on public.meal_latency;
+create policy "Users can read own meal latency"
+  on public.meal_latency for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "Users can insert own meal latency"
+  on public.meal_latency;
+create policy "Users can insert own meal latency"
+  on public.meal_latency for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Users can update own meal latency"
+  on public.meal_latency;
+create policy "Users can update own meal latency"
+  on public.meal_latency for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 create or replace function public.upsert_push_subscription(
   p_endpoint text,

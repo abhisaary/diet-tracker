@@ -383,12 +383,16 @@ function roundMilliseconds(value: number) {
 }
 
 function logClientMealLatency({
+  accessToken,
+  mealId,
   metadata,
   operation,
   outcome,
   stages,
   totalMs,
 }: {
+  accessToken?: string | null;
+  mealId?: string | null;
   metadata: Record<string, number | number[] | string | null>;
   operation: "create" | "edit";
   outcome: "error" | "success";
@@ -406,6 +410,45 @@ function logClientMealLatency({
       totalMs,
     }),
   );
+
+  const requestId =
+    typeof metadata.requestId === "string" ? metadata.requestId : null;
+
+  if (!requestId || !accessToken) {
+    return;
+  }
+
+  const durableMetadata: Record<
+    string,
+    number | number[] | string | boolean | null
+  > = {};
+
+  for (const [key, value] of Object.entries(metadata)) {
+    if (key === "requestId" || key === "serverTiming") {
+      continue;
+    }
+
+    durableMetadata[key] = value;
+  }
+
+  void fetch("/api/meal-latency", {
+    body: JSON.stringify({
+      mealId: mealId ?? undefined,
+      metadata: durableMetadata,
+      operation,
+      outcome,
+      requestId,
+      stages,
+      totalMs,
+    }),
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  }).catch(() => {
+    // Durable latency storage is best-effort and should not block meal UX.
+  });
 }
 
 function waitForNextPaint() {
@@ -3504,6 +3547,8 @@ export default function Home() {
         performance.now() - paintStartedAt,
       );
       logClientMealLatency({
+        accessToken,
+        mealId,
         metadata: latencyMetadata,
         operation: "edit",
         outcome: "success",
@@ -3512,6 +3557,8 @@ export default function Home() {
       });
     } catch (error) {
       logClientMealLatency({
+        accessToken,
+        mealId,
         metadata: latencyMetadata,
         operation: "edit",
         outcome: "error",
@@ -3813,6 +3860,8 @@ export default function Home() {
         performance.now() - paintStartedAt,
       );
       logClientMealLatency({
+        accessToken: session.access_token,
+        mealId: pendingMealId,
         metadata: latencyMetadata,
         operation: "create",
         outcome: "success",
@@ -3828,6 +3877,8 @@ export default function Home() {
     } catch (error) {
       if (!latencyLogged) {
         logClientMealLatency({
+          accessToken,
+          mealId: pendingMealId,
           metadata: latencyMetadata,
           operation: "create",
           outcome: "error",
